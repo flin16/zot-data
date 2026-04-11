@@ -1,0 +1,56 @@
+# === 需要复制到 /etc/caddy/conf.d/0und.caddy ===
+# 复制后运行: sudo systemctl reload caddy
+
+(0und_common) {
+    encode gzip
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "SAMEORIGIN"
+        Referrer-Policy "strict-origin-when-cross-origin"
+    }
+}
+
+0und.com {
+    import 0und_common
+    reverse_proxy 127.0.0.1:8082
+}
+
+mail.0und.com {
+    abort
+}
+
+*.0und.com {
+    tls {
+        dns cloudflare {$CLOUDFLARE_API_TOKEN}
+    }
+
+    map {labels.2} {backend_port} {
+        qbit    6800
+        jp      8000
+        js      5055
+        ntfy    25250
+        couch   5984
+        j8      1188
+        ol      8082
+        auth    9000
+        rss     1200
+        llm     4000
+        next    8085
+        sear    8888
+        zot     8080
+        stream  8081
+        s3      9000
+        minio   9001
+
+        default none
+    }
+
+    @found_port expression "{backend_port} != 'none'"
+    handle @found_port {
+        reverse_proxy 127.0.0.1:{backend_port}
+    }
+    handle {
+        abort
+    }
+}
