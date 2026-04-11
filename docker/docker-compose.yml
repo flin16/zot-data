@@ -6,7 +6,7 @@ services:
       args:
         DATASERVER_REF: master
     ports:
-      - "${ZOTERO_API_PORT:-8080}:80"
+      - "${ZOTERO_API_PORT:-23231}:80"
     environment:
       - MYSQL_HOST=${MYSQL_HOST:-host.docker.internal}
       - MYSQL_USER=${MYSQL_USER:-zotero}

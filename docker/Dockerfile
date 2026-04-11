@@ -23,14 +23,12 @@ RUN curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local
 ARG DATASERVER_REF=master
 WORKDIR /var/www/html
 RUN git clone --depth=1 --branch="${DATASERVER_REF:-master}" \
-        https://github.com/zotero/dataserver.git . ; \
+        https://github.com/zotero/dataserver.git .
 
 # ── Clone zotero-schema submodule ────────────────────────────────────────────
 RUN git submodule update --init --recursive htdocs/zotero-schema || true
 
 # ── Zend Framework 1.x (legacy, not in composer) ────────────────────────────
-# Official mirror, or fall back to direct download of minimal subset we need
-# (Zend_Db only — for Zotero_DB adapter)
 RUN mkdir -p /usr/src/zf1 && \
     wget -q https://github.com/zendframework/zf1/archive/refs/tags/release-1.12.20.tar.gz -O /tmp/zf1.tar.gz && \
     tar -xzf /tmp/zf1.tar.gz -C /usr/src/zf1 --strip-components=1 && \
@@ -42,8 +40,12 @@ RUN mkdir -p /usr/src/zf1 && \
 RUN echo "include_path='.:/usr/local/lib/php:/var/www/html/include'" \
     > /usr/local/etc/php/conf.d/docker-php-zend.ini
 
-# ── Copy config / env-aware patches ──────────────────────────────────────────
-COPY docker/patch-header.php /tmp/
+# ── Copy Docker config files (config/ not in GitHub repo) ────────────────────
+COPY config.inc.php include/config/config.inc.php
+COPY dbconnect.inc.php include/config/dbconnect.inc.php
+
+# ── Apply Docker environment patches ──────────────────────────────────────────
+COPY patch-header.php /tmp/
 RUN php /tmp/patch-header.php
 
 # ── Composer deps ─────────────────────────────────────────────────────────────
@@ -55,11 +57,11 @@ RUN mkdir -p /var/www/html/tmp /var/www/html/tmp/cache && chmod 777 /var/www/htm
 # ── Apache ─────────────────────────────────────────────────────────────────────
 RUN a2enmod rewrite headers \
     && echo "ServerName localhost" >> /etc/apache2/apache2.conf
-COPY docker/apache2-site.conf /etc/apache2/sites-available/000-default.conf
-COPY docker/php.ini /usr/local/etc/php/conf.d/docker-php-custom.ini
+COPY apache2-site.conf /etc/apache2/sites-available/000-default.conf
+COPY php.ini /usr/local/etc/php/conf.d/docker-php-custom.ini
 
 # ── Init script ────────────────────────────────────────────────────────────────
-COPY docker/init.sh /init.sh
+COPY init.sh /init.sh
 RUN chmod +x /init.sh
 
 WORKDIR /var/www/html

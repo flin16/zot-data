@@ -66,22 +66,36 @@ class ZoteroAPI:
         }
         self.user_id = user_id
 
-    def get(self, path: str, params: dict = None):
+    def _api_path(self, path: str, library_type: str, library_id: int) -> str:
+        """Build API path for user or group library."""
+        if library_type == "group":
+            return f"groups/{library_id}/{path}"
+        return f"users/{self.user_id}/{path}"
+
+    def get(self, path: str, params: dict = None, library_type: str = None, library_id: int = None):
+        if library_type:
+            path = self._api_path(path, library_type, library_id)
         url = f"{self.api_url}/{path.lstrip('/')}"
         r = requests.get(url, auth=self.auth, headers=self.headers, params=params, timeout=30)
         return r
 
-    def post(self, path: str, data: dict, params: dict = None):
+    def post(self, path: str, data: dict, params: dict = None, library_type: str = None, library_id: int = None):
+        if library_type:
+            path = self._api_path(path, library_type, library_id)
         url = f"{self.api_url}/{path.lstrip('/')}"
         r = requests.post(url, auth=self.auth, headers=self.headers, json=data, params=params, timeout=30)
         return r
 
-    def patch(self, path: str, data: dict):
+    def patch(self, path: str, data: dict, library_type: str = None, library_id: int = None):
+        if library_type:
+            path = self._api_path(path, library_type, library_id)
         url = f"{self.api_url}/{path.lstrip('/')}"
         r = requests.patch(url, auth=self.auth, headers=self.headers, json=data, timeout=30)
         return r
 
-    def delete(self, path: str):
+    def delete(self, path: str, library_type: str = None, library_id: int = None):
+        if library_type:
+            path = self._api_path(path, library_type, library_id)
         url = f"{self.api_url}/{path.lstrip('/')}"
         r = requests.delete(url, auth=self.auth, headers=self.headers, timeout=30)
         return r
@@ -93,44 +107,54 @@ class ZoteroAPI:
             raise Exception(f"Failed to verify connection: {r.status_code} {r.text}")
         return {"userID": self.user_id, "username": self.auth[0]}
 
-    def get_items(self, since: int = None, limit: int = 100):
+    def get_groups(self):
+        """Return list of group libraries the user belongs to."""
+        r = self.get(f"users/{self.user_id}/groups", params={"format": "json"})
+        if not r.ok:
+            return []
+        items = r.json()
+        return [{"library_id": g["id"], "library_type": "group",
+                 "name": g["data"]["name"], "version": g["version"]} for g in items]
+
+    def get_items(self, since: int = None, limit: int = 100, library_type: str = None, library_id: int = None):
         params = {"format": "json", "limit": limit}
         if since:
             params["since"] = since
-        r = self.get(f"users/{self.user_id}/items", params=params)
+        r = self.get(f"items", params=params, library_type=library_type, library_id=library_id)
         if not r.ok:
             raise Exception(f"Failed to get items: {r.status_code} {r.text}")
         return r.json()
 
-    def get_item(self, item_key: str):
-        r = self.get(f"users/{self.user_id}/items/{item_key}", params={"format": "json"})
+    def get_item(self, item_key: str, library_type: str = None, library_id: int = None):
+        r = self.get(f"items/{item_key}", params={"format": "json"}, library_type=library_type, library_id=library_id)
         if r.status_code == 404:
             return None
         if not r.ok:
             raise Exception(f"Failed to get item {item_key}: {r.status_code}")
         return r.json()
 
-    def post_item(self, item: dict):
-        r = self.post(f"users/{self.user_id}/items", {"items": [item]})
+    def post_item(self, item: dict, library_type: str = None, library_id: int = None):
+        r = self.post(f"items", {"items": [item]}, library_type=library_type, library_id=library_id)
         return r
 
-    def post_items(self, items: list):
-        r = self.post(f"users/{self.user_id}/items", items)
+    def post_items(self, items: list, library_type: str = None, library_id: int = None):
+        r = self.post(f"items", items, library_type=library_type, library_id=library_id)
         return r
 
-    def get_collections(self, since: int = None):
+    def get_collections(self, since: int = None, library_type: str = None, library_id: int = None):
         params = {"format": "json"}
         if since:
             params["since"] = since
-        r = self.get(f"users/{self.user_id}/collections", params=params)
+        r = self.get(f"collections", params=params, library_type=library_type, library_id=library_id)
         if not r.ok:
             raise Exception(f"Failed to get collections: {r.status_code}")
         return r.json() if r.ok else []
 
-    def get_attachment_upload_info(self, item_key: str, filename: str, filesize: int, md5: str):
+    def get_attachment_upload_info(self, item_key: str, filename: str, filesize: int, md5: str,
+                                  library_type: str = None, library_id: int = None):
         """Get pre-signed URL for direct S3 upload"""
         r = self.post(
-            f"users/{self.user_id}/items/{item_key}/file",
+            f"items/{item_key}/file",
             data={},
             params={
                 "filename": filename,
@@ -138,16 +162,20 @@ class ZoteroAPI:
                 "md5": md5,
                 "upload": 1,
             },
+            library_type=library_type,
+            library_id=library_id,
         )
         if not r.ok:
             raise Exception(f"Failed to get upload info: {r.status_code} {r.text}")
         return r.json()
 
-    def register_upload(self, item_key: str, upload_key: str):
+    def register_upload(self, item_key: str, upload_key: str, library_type: str = None, library_id: int = None):
         r = self.post(
-            f"users/{self.user_id}/items/{item_key}/file",
+            f"items/{item_key}/file",
             data={},
             params={"upload": upload_key},
+            library_type=library_type,
+            library_id=library_id,
         )
         return r
 
@@ -158,6 +186,32 @@ class LocalDB:
     def __init__(self, db_path: str):
         self.db = sqlite3.connect(db_path, timeout=30)
         self.db.row_factory = sqlite3.Row
+
+    def get_libraries(self) -> list:
+        """Return all libraries (user + groups) from local DB."""
+        rows = self.db.execute(
+            "SELECT libraryID, type, editable, filesEditable FROM libraries"
+        ).fetchall()
+        result = []
+        for row in rows:
+            r = dict(row)
+            lib_type = r["type"]  # 'user' or 'group'
+            if lib_type == "group":
+                gr = self.db.execute(
+                    "SELECT name FROM groups WHERE libraryID = ?",
+                    (r["libraryID"],)
+                ).fetchone()
+                name = gr["name"] if gr else f"Group {r['libraryID']}"
+            else:
+                name = "My Library"
+            result.append({
+                "library_id": r["libraryID"],
+                "library_type": lib_type,
+                "name": name,
+                "editable": r["editable"],
+                "files_editable": r["filesEditable"],
+            })
+        return result
 
     def get_items(self, library_id: int, unsynced_only: bool = True):
         """Get unsynced items from local DB"""
@@ -394,18 +448,53 @@ class SyncEngine:
         self.dry_run = config["dry_run"]
         self.stats = {"upload": 0, "download": 0, "skip": 0, "error": 0}
 
+    def _get_library_version(self, library_type: str, library_id: int) -> int:
+        r = self.api.get(f"", library_type=library_type, library_id=library_id, params={"format": "json"})
+        if r.ok:
+            data = r.json()
+            return data.get("libraryVersion", 0)
+        return 0
+
+    def _list_target_libraries(self) -> list:
+        """List libraries to sync based on config filter."""
+        libs = self.local.get_libraries()
+        lib_filter = self.cfg.get("library_filter", "all")  # 'all', 'user', 'group'
+
+        if lib_filter == "user":
+            libs = [l for l in libs if l["library_type"] == "user"]
+            log.info("Filtering: user library only")
+        elif lib_filter == "group":
+            libs = [l for l in libs if l["library_type"] == "group"]
+            log.info("Filtering: group libraries only")
+        else:
+            log.info(f"Syncing all libraries ({len(libs)} found)")
+
+        for lib in libs:
+            lt = lib["library_type"]
+            lib["server_version"] = self._get_library_version(lt, lib["library_id"])
+            log.info(f"  [{lt}] {lib['name']} (ID={lib['library_id']}, version={lib['server_version']})")
+
+        return libs
+
     def run(self):
         log.info(f"Connecting to {self.cfg['api_url']}")
         user_info = self.api.get_user_info()
         log.info(f"User: {user_info.get('username')} (ID: {user_info.get('userID')})")
 
-        # Get local library version from server
-        version = self._get_library_version()
-        log.info(f"Library version on server: {version}")
+        target_libs = self._list_target_libraries()
+        if not target_libs:
+            log.warning("No libraries to sync")
+            return
 
-        self._sync_items()
-        if self.cfg["sync_attachments"]:
-            self._sync_attachments()
+        for lib in target_libs:
+            lt = lib["library_type"]
+            lid = lib["library_id"]
+            self.cfg["library_id"] = lid
+
+            log.info(f"--- Syncing [{lt}] {lib['name']} ---")
+            self._sync_items(lt, lid)
+            if self.cfg["sync_attachments"]:
+                self._sync_attachments(lt, lid)
 
         log.info(
             f"Sync done: {self.stats['upload']} uploaded, "
@@ -414,16 +503,9 @@ class SyncEngine:
             f"{self.stats['error']} errors"
         )
 
-    def _get_library_version(self) -> int:
-        r = self.api.get(f"users/{self.cfg['user_id']}", params={"format": "json"})
-        if r.ok:
-            data = r.json()
-            return data.get("libraryVersion", 0)
-        return 0
-
-    def _sync_items(self):
+    def _sync_items(self, library_type: str, library_id: int):
         """Upload unsynced items to server"""
-        items = self.local.get_items(self.cfg["library_id"])
+        items = self.local.get_items(library_id)
         if not items:
             log.info("No unsynced items to upload")
             return
@@ -445,7 +527,7 @@ class SyncEngine:
                 log.info(f"[DRY RUN] Would upload {len(chunk)} items")
                 continue
             try:
-                r = self.api.post_items(chunk)
+                r = self.api.post_items(chunk, library_type=library_type, library_id=library_id)
                 if r.status_code in (200, 201):
                     for item in chunk:
                         item_row = next(
@@ -464,9 +546,9 @@ class SyncEngine:
 
         self.local.commit()
 
-    def _sync_attachments(self):
+    def _sync_attachments(self, library_type: str, library_id: int):
         """Upload local attachments to MinIO + register on server"""
-        attachments = self.local.get_attachments(self.cfg["library_id"])
+        attachments = self.local.get_attachments(library_id)
         if not attachments:
             log.info("No attachments to sync")
             return
@@ -531,12 +613,17 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Zotero Sync Client")
     parser.add_argument("--config", default="zotero_sync_config.json")
     parser.add_argument("--dry-run", action="store_true")
-    parser.add_argument("--library-id", type=int, default=1)
+    parser.add_argument("--library-filter", default=None,
+                        choices=["all", "user", "group"],
+                        help="Filter libraries to sync: all (default), user, group")
     args = parser.parse_args()
 
     config = load_config(args.config)
     config["dry_run"] = args.dry_run or config.get("dry_run", False)
-    config["library_id"] = args.library_id
+    if args.library_filter:
+        config["library_filter"] = args.library_filter
+    elif "library_filter" not in config:
+        config["library_filter"] = "group"  # default to group-only
 
     if not config.get("password"):
         log.error("No password set. Set ZOTERO_PASSWORD env var or password in config.")
