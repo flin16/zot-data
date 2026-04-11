@@ -1,0 +1,546 @@
+#!/usr/bin/env python3
+"""
+Zotero Sync Client - Minimal sync between local SQLite and self-hosted Zotero server.
+Usage: python3 zotero_sync.py [--config config.json]
+"""
+
+import sqlite3
+import json
+import os
+import sys
+import hashlib
+import logging
+import io
+from datetime import datetime, timezone
+from pathlib import Path
+
+import requests
+from minio import Minio
+
+# ─── Logging ───────────────────────────────────────────────────────────────────
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)-8s %(message)s",
+    datefmt="%H:%M:%S",
+)
+log = logging.getLogger("zotero_sync")
+
+
+# ─── Config ─────────────────────────────────────────────────────────────────
+
+DEFAULT_CONFIG = {
+    "api_url": "https://zot.0und.com",
+    "username": "admin",
+    "password": os.getenv("ZOTERO_PASSWORD", "adminpass"),
+    "user_id": 1,
+    "library_id": 1,
+    "local_db": os.path.expanduser("~/Zotero/zotero.sqlite"),
+    "minio_endpoint": "localhost:9000",
+    "minio_access_key": "minioadmin",
+    "minio_secret_key": "minioadmin",
+    "minio_bucket": "zotero",
+    "minio_secure": False,
+    "sync_attachments": True,
+    "dry_run": False,
+}
+
+
+def load_config(config_path: str = None) -> dict:
+    if config_path and Path(config_path).exists():
+        with open(config_path) as f:
+            return {**DEFAULT_CONFIG, **json.load(f)}
+    return {**DEFAULT_CONFIG}
+
+
+# ─── Zotero API Client ────────────────────────────────────────────────────────
+
+class ZoteroAPI:
+    def __init__(self, api_url: str, username: str, password: str, user_id: int):
+        self.api_url = api_url.rstrip("/")
+        self.auth = (username, password)
+        self.headers = {
+            "Zotero-API-Version": "3",
+            "Content-Type": "application/json",
+            "User-Agent": "ZoteroSyncClient/1.0",
+        }
+        self.user_id = user_id
+
+    def get(self, path: str, params: dict = None):
+        url = f"{self.api_url}/{path.lstrip('/')}"
+        r = requests.get(url, auth=self.auth, headers=self.headers, params=params, timeout=30)
+        return r
+
+    def post(self, path: str, data: dict, params: dict = None):
+        url = f"{self.api_url}/{path.lstrip('/')}"
+        r = requests.post(url, auth=self.auth, headers=self.headers, json=data, params=params, timeout=30)
+        return r
+
+    def patch(self, path: str, data: dict):
+        url = f"{self.api_url}/{path.lstrip('/')}"
+        r = requests.patch(url, auth=self.auth, headers=self.headers, json=data, timeout=30)
+        return r
+
+    def delete(self, path: str):
+        url = f"{self.api_url}/{path.lstrip('/')}"
+        r = requests.delete(url, auth=self.auth, headers=self.headers, timeout=30)
+        return r
+
+    def get_user_info(self):
+        # Verify connection by fetching one item; user_id is known from config
+        r = self.get(f"users/{self.user_id}/items", params={"limit": 1, "format": "json"})
+        if not r.ok:
+            raise Exception(f"Failed to verify connection: {r.status_code} {r.text}")
+        return {"userID": self.user_id, "username": self.auth[0]}
+
+    def get_items(self, since: int = None, limit: int = 100):
+        params = {"format": "json", "limit": limit}
+        if since:
+            params["since"] = since
+        r = self.get(f"users/{self.user_id}/items", params=params)
+        if not r.ok:
+            raise Exception(f"Failed to get items: {r.status_code} {r.text}")
+        return r.json()
+
+    def get_item(self, item_key: str):
+        r = self.get(f"users/{self.user_id}/items/{item_key}", params={"format": "json"})
+        if r.status_code == 404:
+            return None
+        if not r.ok:
+            raise Exception(f"Failed to get item {item_key}: {r.status_code}")
+        return r.json()
+
+    def post_item(self, item: dict):
+        r = self.post(f"users/{self.user_id}/items", {"items": [item]})
+        return r
+
+    def post_items(self, items: list):
+        r = self.post(f"users/{self.user_id}/items", items)
+        return r
+
+    def get_collections(self, since: int = None):
+        params = {"format": "json"}
+        if since:
+            params["since"] = since
+        r = self.get(f"users/{self.user_id}/collections", params=params)
+        if not r.ok:
+            raise Exception(f"Failed to get collections: {r.status_code}")
+        return r.json() if r.ok else []
+
+    def get_attachment_upload_info(self, item_key: str, filename: str, filesize: int, md5: str):
+        """Get pre-signed URL for direct S3 upload"""
+        r = self.post(
+            f"users/{self.user_id}/items/{item_key}/file",
+            data={},
+            params={
+                "filename": filename,
+                "filesize": filesize,
+                "md5": md5,
+                "upload": 1,
+            },
+        )
+        if not r.ok:
+            raise Exception(f"Failed to get upload info: {r.status_code} {r.text}")
+        return r.json()
+
+    def register_upload(self, item_key: str, upload_key: str):
+        r = self.post(
+            f"users/{self.user_id}/items/{item_key}/file",
+            data={},
+            params={"upload": upload_key},
+        )
+        return r
+
+
+# ─── Local DB Reader ─────────────────────────────────────────────────────────
+
+class LocalDB:
+    def __init__(self, db_path: str):
+        self.db = sqlite3.connect(db_path, timeout=30)
+        self.db.row_factory = sqlite3.Row
+
+    def get_items(self, library_id: int, unsynced_only: bool = True):
+        """Get unsynced items from local DB"""
+        query = """
+            SELECT i.itemID, i.key, i.version, i.itemTypeID,
+                   i.dateAdded, i.dateModified, i.clientDateModified,
+                   i.libraryID, i.synced
+            FROM items i
+            WHERE i.libraryID = ?
+        """
+        if unsynced_only:
+            query += " AND i.synced = 0"
+        query += " ORDER BY i.dateModified"
+        rows = self.db.execute(query, (library_id,)).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_item_data(self, item_id: int) -> dict:
+        """Get all data fields for an item"""
+        rows = self.db.execute("""
+            SELECT fd.fieldName, idv.value
+            FROM itemData id
+            JOIN itemDataValues idv ON id.valueID = idv.valueID
+            JOIN fieldsCombined fd ON id.fieldID = fd.fieldID
+            WHERE id.itemID = ?
+        """, (item_id,)).fetchall()
+        return {row["fieldName"]: row["value"] for row in rows}
+
+    def get_item_creators(self, item_id: int) -> list:
+        """Get creators for an item"""
+        rows = self.db.execute("""
+            SELECT ic.creatorTypeID, ic.orderIndex, c.creatorID,
+                   c.firstName, c.lastName, c.fieldMode
+            FROM itemCreators ic
+            JOIN creators c ON ic.creatorID = c.creatorID
+            WHERE ic.itemID = ?
+            ORDER BY ic.orderIndex
+        """, (item_id,)).fetchall()
+        creators = []
+        for row in rows:
+            if row["fieldMode"] == 1:
+                creators.append({
+                    "creatorType": self._creator_type_name(row["creatorTypeID"]),
+                    "lastName": row["lastName"] or "",
+                })
+            else:
+                creators.append({
+                    "creatorType": self._creator_type_name(row["creatorTypeID"]),
+                    "firstName": row["firstName"] or "",
+                    "lastName": row["lastName"] or "",
+                })
+        return creators
+
+    def _creator_type_name(self, creator_type_id: int) -> str:
+        row = self.db.execute(
+            "SELECT typeName FROM creatorTypes WHERE creatorTypeID = ?",
+            (creator_type_id,)
+        ).fetchone()
+        return row["typeName"] if row else "author"
+
+    def get_item_type(self, item_type_id: int) -> str:
+        row = self.db.execute(
+            "SELECT typeName FROM itemTypes WHERE itemTypeID = ?",
+            (item_type_id,)
+        ).fetchone()
+        return row["typeName"] if row else "journalArticle"
+
+    def get_collections(self, library_id: int, unsynced_only: bool = True):
+        query = """
+            SELECT c.collectionID, c.key, c.collectionName, c.version,
+                   c.parentCollectionID, c.clientDateModified
+            FROM collections c
+            WHERE c.libraryID = ?
+        """
+        if unsynced_only:
+            query += " AND c.synced = 0"
+        rows = self.db.execute(query, (library_id,)).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_attachments(self, library_id: int, unsynced_only: bool = True):
+        """Get attachment items (linked or imported files)"""
+        rows = self.db.execute("""
+            SELECT i.itemID, i.key, i.version, i.libraryID,
+                   ia.linkMode, ia.contentType,
+                   ia.charsetID, ia.path, ia.syncState,
+                   ia.storageHash as md5
+            FROM items i
+            JOIN itemAttachments ia ON i.itemID = ia.itemID
+            WHERE i.libraryID = ?
+        """, (library_id,)).fetchall()
+        result = []
+        for row in rows:
+            r = dict(row)
+            if unsynced_only and r["syncState"] == 1:
+                continue  # already synced
+            result.append(r)
+        return result
+
+    def get_attachment_file(self, path: str) -> tuple:
+        """Read attachment file, return (content, md5, size)"""
+        if not path:
+            return None, None, None
+        p = Path(path)
+        if not p.exists():
+            return None, None, None
+        content = p.read_bytes()
+        md5 = hashlib.md5(content).hexdigest()
+        return content, md5, len(content)
+
+    def mark_synced(self, item_id: int, version: int):
+        self.db.execute(
+            "UPDATE items SET synced = 1 WHERE itemID = ?",
+            (item_id,)
+        )
+
+    def commit(self):
+        self.db.commit()
+
+
+# ─── MinIO Storage Client ───────────────────────────────────────────────────
+
+class StorageClient:
+    def __init__(self, endpoint: str, access_key: str, secret_key: str,
+                 bucket: str, secure: bool = False):
+        self.client = Minio(
+            endpoint,
+            access_key=access_key,
+            secret_key=secret_key,
+            secure=secure,
+        )
+        self.bucket = bucket
+        self._ensure_bucket()
+
+    def _ensure_bucket(self):
+        if not self.client.bucket_exists(self.bucket):
+            self.client.make_bucket(self.bucket)
+            log.info(f"Created bucket: {self.bucket}")
+
+    def upload_file(self, filepath: str, md5: str) -> str:
+        """Upload file to MinIO, return hash key"""
+        with open(filepath, "rb") as f:
+            content = f.read()
+            file_md5 = hashlib.md5(content).hexdigest()
+        if md5 and md5 != file_md5:
+            raise Exception(f"MD5 mismatch: expected {md5}, got {file_md5}")
+        self.client.put_object(self.bucket, file_md5, io.BytesIO(content), len(content))
+        log.info(f"Uploaded {filepath} as {file_md5}")
+        return file_md5
+
+    def file_exists(self, md5: str) -> bool:
+        try:
+            self.client.stat_object(self.bucket, md5)
+            return True
+        except:
+            return False
+
+
+# ─── Item Converter ─────────────────────────────────────────────────────────
+
+class ItemConverter:
+    """Convert local SQLite item → Zotero API JSON item"""
+
+    ITEM_TYPE_MAP = {}  # lazy-loaded from local DB
+    FIELD_MAP = {}      # lazy-loaded
+
+    def __init__(self, local_db: LocalDB):
+        self.db = local_db
+        self._load_maps()
+
+    def _load_maps(self):
+        rows = self.db.db.execute("SELECT itemTypeID, typeName FROM itemTypes").fetchall()
+        self.ITEM_TYPE_MAP = {r["itemTypeID"]: r["typeName"] for r in rows}
+        rows = self.db.db.execute("SELECT fieldID, fieldName FROM fieldsCombined").fetchall()
+        self.FIELD_MAP = {r["fieldID"]: r["fieldName"] for r in rows}
+
+    def to_json(self, item_row: dict) -> dict:
+        item_id = item_row["itemID"]
+        item_type = self.ITEM_TYPE_MAP.get(item_row["itemTypeID"], "journalArticle")
+
+        data = self.db.get_item_data(item_id)
+        creators = self.db.get_item_creators(item_id)
+
+        result = {
+            "key": item_row["key"],
+            "version": item_row["version"],
+            "itemType": item_type,
+            "creators": creators,
+            "tags": self._get_tags(item_id),
+            "collections": self._get_collections(item_id),
+            "relations": {},
+            "dateAdded": item_row["dateAdded"],
+            "dateModified": item_row["dateModified"],
+        }
+        result.update(data)
+        return result
+
+    def _get_tags(self, item_id: int) -> list:
+        rows = self.db.db.execute("""
+            SELECT t.name, it.type
+            FROM itemTags it
+            JOIN tags t ON it.tagID = t.tagID
+            WHERE it.itemID = ?
+        """, (item_id,)).fetchall()
+        return [{"tag": row["name"], "type": row["type"]} for row in rows]
+
+    def _get_collections(self, item_id: int) -> list:
+        rows = self.db.db.execute("""
+            SELECT c.key FROM collectionItems ci
+            JOIN collections c ON ci.collectionID = c.collectionID
+            WHERE ci.itemID = ?
+        """, (item_id,)).fetchall()
+        return [row["key"] for row in rows]
+
+
+# ─── Sync Engine ─────────────────────────────────────────────────────────────
+
+class SyncEngine:
+    def __init__(self, config: dict):
+        self.cfg = config
+        self.api = ZoteroAPI(
+            config["api_url"],
+            config["username"],
+            config["password"],
+            config["user_id"],
+        )
+        self.local = LocalDB(config["local_db"])
+        self.converter = ItemConverter(self.local)
+        self.storage = StorageClient(
+            config["minio_endpoint"],
+            config["minio_access_key"],
+            config["minio_secret_key"],
+            config["minio_bucket"],
+            config["minio_secure"],
+        )
+        self.dry_run = config["dry_run"]
+        self.stats = {"upload": 0, "download": 0, "skip": 0, "error": 0}
+
+    def run(self):
+        log.info(f"Connecting to {self.cfg['api_url']}")
+        user_info = self.api.get_user_info()
+        log.info(f"User: {user_info.get('username')} (ID: {user_info.get('userID')})")
+
+        # Get local library version from server
+        version = self._get_library_version()
+        log.info(f"Library version on server: {version}")
+
+        self._sync_items()
+        if self.cfg["sync_attachments"]:
+            self._sync_attachments()
+
+        log.info(
+            f"Sync done: {self.stats['upload']} uploaded, "
+            f"{self.stats['download']} downloaded, "
+            f"{self.stats['skip']} skipped, "
+            f"{self.stats['error']} errors"
+        )
+
+    def _get_library_version(self) -> int:
+        r = self.api.get(f"users/{self.cfg['user_id']}", params={"format": "json"})
+        if r.ok:
+            data = r.json()
+            return data.get("libraryVersion", 0)
+        return 0
+
+    def _sync_items(self):
+        """Upload unsynced items to server"""
+        items = self.local.get_items(self.cfg["library_id"])
+        if not items:
+            log.info("No unsynced items to upload")
+            return
+
+        log.info(f"Uploading {len(items)} items...")
+        batch = []
+        for item_row in items:
+            try:
+                json_item = self.converter.to_json(item_row)
+                batch.append(json_item)
+            except Exception as e:
+                log.error(f"Error converting item {item_row['key']}: {e}")
+                self.stats["error"] += 1
+
+        # Upload in batches of 50
+        for i in range(0, len(batch), 50):
+            chunk = batch[i:i+50]
+            if self.dry_run:
+                log.info(f"[DRY RUN] Would upload {len(chunk)} items")
+                continue
+            try:
+                r = self.api.post_items(chunk)
+                if r.status_code in (200, 201):
+                    for item in chunk:
+                        item_row = next(
+                            x for x in items
+                            if x["key"] == item["key"]
+                        )
+                        self.local.mark_synced(item_row["itemID"], item.get("version", 0))
+                    log.info(f"Uploaded {len(chunk)} items OK")
+                    self.stats["upload"] += len(chunk)
+                else:
+                    log.error(f"Upload failed: {r.status_code} {r.text[:200]}")
+                    self.stats["error"] += len(chunk)
+            except Exception as e:
+                log.error(f"Upload batch error: {e}")
+                self.stats["error"] += len(chunk)
+
+        self.local.commit()
+
+    def _sync_attachments(self):
+        """Upload local attachments to MinIO + register on server"""
+        attachments = self.local.get_attachments(self.cfg["library_id"])
+        if not attachments:
+            log.info("No attachments to sync")
+            return
+
+        log.info(f"Syncing {len(attachments)} attachments...")
+        for att in attachments:
+            key = att["key"]
+            local_path = att.get("path", "")
+            link_mode = att.get("linkMode", 0)
+
+            if link_mode == 3:  # linked URL
+                log.info(f"Skipping linked URL: {key}")
+                self.stats["skip"] += 1
+                continue
+
+            if link_mode == 2:  # linked file
+                log.info(f"Skipping linked file: {key}")
+                self.stats["skip"] += 1
+                continue
+
+            # Imported file (path is "storage:filename.pdf")
+            if local_path and local_path.startswith("storage:"):
+                filename = local_path[8:]  # strip "storage:"
+                key = att["key"]
+                data_dir = Path(self.cfg.get("local_db", "~/Zotero/zotero.sqlite")).parent
+                local_path = str(data_dir / "storage" / key / filename)
+
+            if not local_path or not Path(local_path).exists():
+                log.warning(f"Attachment file not found: {local_path}")
+                self.stats["error"] += 1
+                continue
+
+            try:
+                content, md5, size = self.local.get_attachment_file(local_path)
+                if not md5:
+                    log.warning(f"Could not read attachment: {local_path}")
+                    self.stats["error"] += 1
+                    continue
+
+                # Check if already in MinIO
+                if self.storage.file_exists(md5):
+                    log.info(f"File {md5} already in storage, skipping upload")
+                    self.stats["skip"] += 1
+                else:
+                    # Upload to MinIO directly
+                    if not self.dry_run:
+                        self.storage.upload_file(local_path, md5)
+                    else:
+                        log.info(f"[DRY RUN] Would upload {local_path} as {md5}")
+                    self.stats["upload"] += 1
+
+            except Exception as e:
+                log.error(f"Error syncing attachment {key}: {e}")
+                self.stats["error"] += 1
+
+
+# ─── CLI ─────────────────────────────────────────────────────────────────────
+
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Zotero Sync Client")
+    parser.add_argument("--config", default="zotero_sync_config.json")
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--library-id", type=int, default=1)
+    args = parser.parse_args()
+
+    config = load_config(args.config)
+    config["dry_run"] = args.dry_run or config.get("dry_run", False)
+    config["library_id"] = args.library_id
+
+    if not config.get("password"):
+        log.error("No password set. Set ZOTERO_PASSWORD env var or password in config.")
+        sys.exit(1)
+
+    engine = SyncEngine(config)
+    engine.run()
