@@ -64,6 +64,7 @@ COPY php.ini /usr/local/etc/php/conf.d/docker-php-custom.ini
 
 # ── Init script ────────────────────────────────────────────────────────────────
 COPY init.sh /init.sh
+COPY init-schema.php /init-schema.php
 RUN chmod +x /init.sh
 
 WORKDIR /var/www/html

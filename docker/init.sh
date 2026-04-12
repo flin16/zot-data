@@ -1,6 +1,11 @@
 #!/bin/bash
 set -e
 
+cd /var/www/html
+
+# Apply schema updates (new item types, fields)
+php /init-schema.php
+
 cd /var/www/html/misc
 
 MYSQL_HOST="${MYSQL_HOST:-host.docker.internal}"
