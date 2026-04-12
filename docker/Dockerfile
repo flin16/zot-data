@@ -25,8 +25,10 @@ WORKDIR /var/www/html
 RUN git clone --depth=1 --branch="${DATASERVER_REF:-master}" \
         https://github.com/zotero/dataserver.git .
 
-# ── Clone zotero-schema submodule ────────────────────────────────────────────
-RUN git submodule update --init --recursive htdocs/zotero-schema || true
+# ── Clone zotero-schema (submodule, but clone directly to avoid safe.directory issues) ──
+RUN git config --global --add safe.directory /var/www/html \
+    && rm -rf htdocs/zotero-schema \
+    && git clone --depth=1 https://github.com/zotero/zotero-schema.git htdocs/zotero-schema
 
 # ── Zend Framework 1.x (legacy, not in composer) ────────────────────────────
 RUN mkdir -p /usr/src/zf1 && \
