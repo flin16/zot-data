@@ -32,15 +32,28 @@ log = logging.getLogger("zotero_sync")
 
 
 def _default_local_db() -> str:
-    """Return platform-appropriate Zotero database path."""
+    """Return platform-appropriate Zotero database path, checking common locations."""
     home = Path.home()
+    candidates = []
     if platform.system() == "Darwin":
-        base = home / "Library" / "Application Support" / "Zotero"
+        candidates = [
+            home / "Zotero" / "zotero.sqlite",
+            home / "Library" / "Application Support" / "Zotero" / "zotero.sqlite",
+        ]
     elif platform.system() == "Windows":
-        base = Path(os.environ.get("APPDATA", home / "AppData" / "Roaming")) / "Zotero" / "Zotero"
+        candidates = [
+            Path(os.environ.get("APPDATA", "")) / "Zotero" / "Zotero" / "zotero.sqlite",
+            home / "Zotero" / "zotero.sqlite",
+        ]
     else:  # Linux / other
-        base = home / "Zotero"
-    return str(base / "zotero.sqlite")
+        candidates = [
+            home / "Zotero" / "zotero.sqlite",
+            home / "Library" / "Application Support" / "Zotero" / "zotero.sqlite",
+        ]
+    for p in candidates:
+        if p.exists() and p.stat().st_size > 0:
+            return str(p)
+    return str(candidates[0])
 
 
 DEFAULT_CONFIG = {
