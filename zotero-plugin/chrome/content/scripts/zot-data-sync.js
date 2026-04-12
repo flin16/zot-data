@@ -51,13 +51,15 @@ ZotDataSync = {
     async getItemsInLibrary(libraryID) {
         // Use Zotero.Search API for Zotero 9 compatibility
         try {
+            // Get all items (no filter) and filter client-side
             const s = new Zotero.Search();
             s.libraryID = libraryID;
-            s.addCondition('itemType', 'isNot', 'attachment');
-            const itemIDs = await s.search();
-            Zotero.debug(`[ZotDataSync] Search returned ${itemIDs.length} item IDs for library ${libraryID}`);
+            const raw = await s.search();
+            const allIDs = raw ? Array.from(raw) : [];
+            Zotero.debug(`[ZotDataSync] Total items in library ${libraryID}: ${allIDs.length}`);
+
             const result = [];
-            for (const id of itemIDs) {
+            for (const id of allIDs) {
                 const item = Zotero.Items.get(id);
                 if (!item) continue;
                 result.push({
@@ -70,6 +72,7 @@ ZotDataSync = {
                     libraryID: item.libraryID,
                 });
             }
+            Zotero.debug(`[ZotDataSync] All items to sync: ${result.length}`);
             return result;
         } catch (e) {
             Zotero.debug(`[ZotDataSync] getItemsInLibrary(${libraryID}) failed: ${e}`);
@@ -192,6 +195,57 @@ ZotDataSync = {
         const itemTypeMapExtra = { preprint: "document" };
         const mappedType = itemTypeMapExtra[itemType] || itemType;
 
+        // Annotations have special fields
+        if (item.isAnnotation()) {
+            const parent = item.parentID ? Zotero.Items.get(item.parentID) : null;
+            return {
+                key: itemRow.key,
+                version: 0,
+                itemType: 'annotation',
+                annotationType: item.annotationType || '',
+                annotationText: item.annotationText || '',
+                annotationColor: item.annotationColor || '',
+                annotationPageLabel: item.annotationPageLabel || '',
+                parentItem: parent ? parent.key : '',
+                tags,
+                dateAdded: item.dateAdded,
+                dateModified: item.dateModified,
+            };
+        }
+
+        // Non-regular, non-annotation items (notes, attachments, etc.)
+        if (!item.isRegularItem() && !item.isAnnotation()) {
+            const payload = {
+                key: itemRow.key,
+                version: 0,
+                itemType: mappedType,
+                tags,
+                dateAdded: item.dateAdded,
+                dateModified: item.dateModified,
+            };
+            // Attachments need linkMode (must be string: imported_file, imported_url, etc.)
+            if (item.isImportedAttachment()) {
+                const lm = item.linkMode;
+                // Zotero 9 linkMode may be int or string; normalize to string name
+                const linkModeMap = { 1: 'imported_file', 2: 'imported_url', 3: 'linked_file', 4: 'linked_url' };
+                payload.linkMode = (typeof lm === 'string') ? lm : (linkModeMap[lm] || 'imported_file');
+                const fn = item.attachmentFilename;
+                if (fn) payload.filename = fn;
+                const sz = item.attachmentSize;
+                if (sz) payload.filesize = sz;
+                const ct = item.attachmentContentType;
+                if (ct) payload.contentType = ct;
+                const md = item.attachmentMD5;
+                if (md) payload.md5 = md;
+            }
+            // Notes need the note field
+            if (mappedType === 'note') {
+                const noteText = item.getField('note');
+                if (noteText) payload.note = noteText;
+            }
+            return payload;
+        }
+
         // Map creators: fieldMode 1 = single field (lastName only)
         // Skip creators without creatorType
         const mappedCreators = creators
@@ -216,19 +270,13 @@ ZotDataSync = {
             dateModified: item.dateModified,
         };
 
-        // Only add note content for notes
-        if (mappedType === 'note') {
-            const noteText = item.getField('note');
-            if (noteText) payload.note = noteText;
-        } else {
-            // Add regular fields, skipping inapplicable ones
-            for (const field of apiFields) {
-                try {
-                    const val = item.getField(field);
-                    if (val) payload[field] = val;
-                } catch (e) {
-                    // Field not applicable for this item type, skip
-                }
+        // Add regular fields, skipping inapplicable ones
+        for (const field of apiFields) {
+            try {
+                const val = item.getField(field);
+                if (val) payload[field] = val;
+            } catch (e) {
+                // Field not applicable for this item type, skip
             }
         }
 
