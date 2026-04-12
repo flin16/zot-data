@@ -242,13 +242,14 @@ class LocalDB:
         return result
 
     def get_items(self, library_id: int, unsynced_only: bool = True):
-        """Get unsynced items from local DB"""
+        """Get unsynced non-attachment items from local DB"""
         query = """
             SELECT i.itemID, i.key, i.version, i.itemTypeID,
                    i.dateAdded, i.dateModified, i.clientDateModified,
                    i.libraryID, i.synced
             FROM items i
             WHERE i.libraryID = ?
+              AND i.itemTypeID != (SELECT itemTypeID FROM itemTypes WHERE typeName = 'attachment')
         """
         if unsynced_only:
             query += " AND i.synced = 0"
@@ -607,28 +608,50 @@ class SyncEngine:
             try:
                 r = self.api.post_items(chunk, library_type=library_type, library_id=server_library_id)
                 if r.status_code in (200, 201):
-                    # Parse response to find successfully created items
-                    # Zotero returns: {"results": [{"key": "...", "version": N}]}
-                    # Server-side failures are included in results with no key/version
                     try:
                         data = r.json()
-                        results = data.get("results", []) if isinstance(data, dict) else (data or [])
-                        success_keys = set()
-                        for result in results:
-                            if isinstance(result, dict) and result.get("key"):
-                                success_keys.add(result["key"])
-                        for item in chunk:
-                            item_row = next(x for x in items if x["key"] == item["key"])
-                            if item["key"] in success_keys:
-                                self.local.mark_synced(item_row["itemID"], 0)
-                            else:
-                                log.warning(f"Item {item['key']} not accepted by server")
-                                self.stats["error"] += 1
-                        self.stats["upload"] += len(success_keys)
-                        log.info(f"Uploaded {len(success_keys)}/{len(chunk)} items OK")
-                    except Exception as parse_err:
-                        log.error(f"Failed to parse response: {parse_err}")
+                    except Exception:
+                        log.error(f"Non-JSON response: {r.text[:200]}")
                         self.stats["error"] += len(chunk)
+                        continue
+
+                    # Zotero returns: {"successful": {}, "success": {}, "unchanged": {}, "failed": {}}
+                    # successful: newly created (index → {key, version})
+                    # success: updated existing (key → {key, version})
+                    # unchanged: already current (key → {key, version})
+                    # failed: errors (index → {code, message})
+                    success_keys = set()
+                    skipped_keys = set()
+
+                    for idx, val in data.get("successful", {}).items():
+                        if isinstance(val, dict) and val.get("key"):
+                            success_keys.add(val["key"])
+                    for key, val in data.get("success", {}).items():
+                        if isinstance(val, dict) and val.get("key"):
+                            success_keys.add(val["key"])
+                    for key, val in data.get("unchanged", {}).items():
+                        if isinstance(val, dict) and val.get("key"):
+                            success_keys.add(val["key"])
+
+                    # 412 = item already exists on server (version conflict) → treat as synced
+                    for idx, val in data.get("failed", {}).items():
+                        if isinstance(val, dict) and val.get("code") == 412:
+                            try:
+                                key = chunk[int(idx)]["key"]
+                                success_keys.add(key)
+                            except (ValueError, KeyError):
+                                pass
+
+                    for item in chunk:
+                        item_row = next(x for x in items if x["key"] == item["key"])
+                        if item["key"] in success_keys:
+                            self.local.mark_synced(item_row["itemID"], 0)
+                        else:
+                            err = data.get("failed", {}).get(str(chunk.index(item)), {})
+                            log.warning(f"Item {item['key']} not accepted: {err.get('code')} {err.get('message', '')}")
+                            self.stats["error"] += 1
+                    self.stats["upload"] += len(success_keys)
+                    log.info(f"Uploaded {len(success_keys)}/{len(chunk)} items OK")
                 else:
                     log.error(f"Upload failed: {r.status_code} {r.text[:200]}")
                     self.stats["error"] += len(chunk)
