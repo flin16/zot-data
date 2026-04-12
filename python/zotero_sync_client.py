@@ -165,7 +165,7 @@ class ZoteroAPI:
         return r
 
     def post_items(self, items: list, library_type: str = None, library_id: int = None):
-        r = self.post(f"items", {"items": items}, library_type=library_type, library_id=library_id)
+        r = self.post(f"items", items, library_type=library_type, library_id=library_id)
         return r
 
     def get_collections(self, since: int = None, library_type: str = None, library_id: int = None):
