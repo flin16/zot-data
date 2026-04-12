@@ -414,7 +414,7 @@ class ItemConverter:
         rows = self.db.db.execute("SELECT fieldID, fieldName FROM fieldsCombined").fetchall()
         self.FIELD_MAP = {r["fieldID"]: r["fieldName"] for r in rows}
 
-    def to_json(self, item_row: dict) -> dict:
+    def to_json(self, item_row: dict, library_context: dict = None) -> dict:
         item_id = item_row["itemID"]
         item_type = self.ITEM_TYPE_MAP.get(item_row["itemTypeID"], "journalArticle")
 
@@ -432,6 +432,8 @@ class ItemConverter:
             "dateAdded": item_row["dateAdded"],
             "dateModified": item_row["dateModified"],
         }
+        if library_context:
+            result["library"] = library_context
         result.update(data)
         return result
 
@@ -483,8 +485,27 @@ class SyncEngine:
             return data.get("libraryVersion", 0)
         return 0
 
+    def _resolve_server_library_id(self, lib: dict) -> int:
+        """Map local library to server-side library ID.
+
+        User library: server ID is the config user_id.
+        Group library: fetch /users/{user_id}/groups, match by name.
+        Returns None if group not found on server (will be skipped).
+        """
+        lt = lib["library_type"]
+        if lt == "user":
+            return self.cfg["user_id"]
+
+        # Group: match by name against server groups
+        server_groups = self.api.get_groups()
+        server_map = {g["name"]: g["library_id"] for g in server_groups}
+        server_id = server_map.get(lib["name"])
+        if server_id is None:
+            log.warning(f"  Group '{lib['name']}' not found on server — skipping")
+        return server_id
+
     def _list_target_libraries(self) -> list:
-        """List libraries to sync based on config filter."""
+        """List libraries to sync based on config filter, resolved to server IDs."""
         libs = self.local.get_libraries()
         lib_filter = self.cfg.get("library_filter", "all")  # 'all', 'user', 'group'
 
@@ -497,12 +518,18 @@ class SyncEngine:
         else:
             log.info(f"Syncing all libraries ({len(libs)} found)")
 
+        result = []
         for lib in libs:
+            server_id = self._resolve_server_library_id(lib)
+            if server_id is None:
+                continue  # group not on server
+            lib["server_library_id"] = server_id
             lt = lib["library_type"]
-            lib["server_version"] = self._get_library_version(lt, lib["library_id"])
-            log.info(f"  [{lt}] {lib['name']} (ID={lib['library_id']}, version={lib['server_version']})")
+            lib["server_version"] = self._get_library_version(lt, server_id)
+            log.info(f"  [{lt}] {lib['name']} (localID={lib['library_id']}, serverID={server_id}, version={lib['server_version']})")
+            result.append(lib)
 
-        return libs
+        return result
 
     def run(self):
         log.info(f"Connecting to {self.cfg['api_url']}")
@@ -517,12 +544,13 @@ class SyncEngine:
         for lib in target_libs:
             lt = lib["library_type"]
             lid = lib["library_id"]
-            self.cfg["library_id"] = lid
+            sid = lib["server_library_id"]
+            self.cfg["library_id"] = sid
 
             log.info(f"--- Syncing [{lt}] {lib['name']} ---")
-            self._sync_items(lt, lid)
+            self._sync_items(lt, lid, sid)
             if self.cfg["sync_attachments"]:
-                self._sync_attachments(lt, lid)
+                self._sync_attachments(lt, lid, sid)
 
         log.info(
             f"Sync done: {self.stats['upload']} uploaded, "
@@ -531,18 +559,28 @@ class SyncEngine:
             f"{self.stats['error']} errors"
         )
 
-    def _sync_items(self, library_type: str, library_id: int):
-        """Upload unsynced items to server"""
+    def _sync_items(self, library_type: str, library_id: int, server_library_id: int):
+        """Upload unsynced items to server.
+
+        library_id: local DB library ID (for querying local SQLite).
+        server_library_id: server-side library ID (for API calls).
+        """
         items = self.local.get_items(library_id)
         if not items:
             log.info("No unsynced items to upload")
             return
 
+        # Build Zotero API library context for item JSON
+        if library_type == "user":
+            library_context = {"type": "user", "id": server_library_id}
+        else:
+            library_context = {"type": "group", "id": server_library_id}
+
         log.info(f"Uploading {len(items)} items...")
         batch = []
         for item_row in items:
             try:
-                json_item = self.converter.to_json(item_row)
+                json_item = self.converter.to_json(item_row, library_context=library_context)
                 batch.append(json_item)
             except Exception as e:
                 log.error(f"Error converting item {item_row['key']}: {e}")
@@ -555,7 +593,7 @@ class SyncEngine:
                 log.info(f"[DRY RUN] Would upload {len(chunk)} items")
                 continue
             try:
-                r = self.api.post_items(chunk, library_type=library_type, library_id=library_id)
+                r = self.api.post_items(chunk, library_type=library_type, library_id=server_library_id)
                 if r.status_code in (200, 201):
                     for item in chunk:
                         item_row = next(
@@ -574,7 +612,7 @@ class SyncEngine:
 
         self.local.commit()
 
-    def _sync_attachments(self, library_type: str, library_id: int):
+    def _sync_attachments(self, library_type: str, library_id: int, server_library_id: int):
         """Upload local attachments to MinIO + register on server"""
         attachments = self.local.get_attachments(library_id)
         if not attachments:
