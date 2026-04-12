@@ -36,6 +36,18 @@ ZotDataSync = {
     get libraryFilter() {
         return this.getPref("extensions.zot-data-sync.library_filter", "group");
     },
+    get minioEndpoint() {
+        return this.getPref("extensions.zot-data-sync.minio_endpoint", "s3.0und.com");
+    },
+    get minioAccessKey() {
+        return this.getPref("extensions.zot-data-sync.minio_access_key", "minioadmin");
+    },
+    get minioSecretKey() {
+        return this.getPref("extensions.zot-data-sync.minio_secret_key", "minioadmin");
+    },
+    get minioBucket() {
+        return this.getPref("extensions.zot-data-sync.minio_bucket", "zotero");
+    },
 
     // ── Init ───────────────────────────────────────────────────────────────────
 
@@ -46,43 +58,9 @@ ZotDataSync = {
         Zotero.debug(`[ZotDataSync] v${version} starting — server: ${this.serverURL}`);
     },
 
-    // ── DB helpers (using Zotero JS API) ─────────────────────────────────────
-
-    async getItemsInLibrary(libraryID) {
-        // Use Zotero.Search API for Zotero 9 compatibility
-        try {
-            // Get all items (no filter) and filter client-side
-            const s = new Zotero.Search();
-            s.libraryID = libraryID;
-            const raw = await s.search();
-            const allIDs = raw ? Array.from(raw) : [];
-            Zotero.debug(`[ZotDataSync] Total items in library ${libraryID}: ${allIDs.length}`);
-
-            const result = [];
-            for (const id of allIDs) {
-                const item = Zotero.Items.get(id);
-                if (!item) continue;
-                result.push({
-                    itemID: item.id,
-                    key: item.key,
-                    version: item.version,
-                    itemTypeID: item.itemTypeID,
-                    dateAdded: item.dateAdded,
-                    dateModified: item.dateModified,
-                    libraryID: item.libraryID,
-                });
-            }
-            Zotero.debug(`[ZotDataSync] All items to sync: ${result.length}`);
-            return result;
-        } catch (e) {
-            Zotero.debug(`[ZotDataSync] getItemsInLibrary(${libraryID}) failed: ${e}`);
-            return [];
-        }
-    },
-
+    // ── Library enumeration ──────────────────────────────────────────────────
 
     async getLibraries() {
-        // Use Zotero API to enumerate all libraries
         try {
             const libs = [];
             for (const lib of Zotero.Libraries.getAll()) {
@@ -95,7 +73,7 @@ ZotDataSync = {
                     name: isGroup ? (lib.name || `Group ${id}`) : 'My Library',
                 });
             }
-            Zotero.debug(`[ZotDataSync] getLibraries() via Zotero API: ${libs.length} libs`);
+            Zotero.debug(`[ZotDataSync] getLibraries(): ${libs.length} libs`);
             return libs;
         } catch (e) {
             Zotero.debug(`[ZotDataSync] Zotero.Libraries.getAll() failed: ${e}`);
@@ -104,73 +82,95 @@ ZotDataSync = {
     },
 
     async getServerGroups() {
-        // Get groups from the API using the user's groups list
-        Zotero.debug(`[ZotDataSync] Fetching groups from ${this.serverURL}/users/${this.userID}/groups`);
+        // Server returns {id, name} — no need for individual fetches
         const r = await this.httpRequest(
             `${this.serverURL}/users/${this.userID}/groups`,
             { headers: this._apiHeaders() }
         );
-        Zotero.debug(`[ZotDataSync] Groups response status: ${r.status}`);
         if (r.status !== 200) throw new Error(`Failed to fetch groups: ${r.status}`);
         const data = JSON.parse(r.responseText);
-        Zotero.debug(`[ZotDataSync] Groups raw response: ${r.responseText.substring(0, 500)}`);
-
-        // Fetch each group's name individually
-        const groups = [];
-        for (const g of (data || [])) {
-            const groupId = g.library ? g.library.id : g.id;
-            try {
-                const gr = await this.httpRequest(
-                    `${this.serverURL}/groups/${groupId}`,
-                    { headers: this._apiHeaders() }
-                );
-                if (gr.status === 200) {
-                    const gd = JSON.parse(gr.responseText);
-                    groups.push({ id: groupId, name: gd.name || `Group ${groupId}` });
-                }
-            } catch (e) {
-                Zotero.debug(`[ZotDataSync] Failed to fetch group ${groupId}: ${e}`);
-                groups.push({ id: groupId, name: `Group ${groupId}` });
-            }
-        }
-        return groups;
+        return (data || []).map(g => ({
+            id: g.library ? g.library.id : g.id,
+            name: g.name || `Group ${g.id}`,
+        }));
     },
 
     // ── Custom sync state (per library last-sync timestamp) ─────────────────
 
     _getLastSyncTime(libraryID) {
-        const key = `extensions.zot-data-sync.lastSync.${libraryID}`;
-        return this.getPref(key, null);  // ISO timestamp string or null
+        const raw = Zotero.Prefs.get(`extensions.zot-data-sync.lastSync.${libraryID}`, true);
+        if (raw instanceof Date) return raw.toISOString();
+        if (typeof raw === 'string' && raw) return raw;
+        return undefined;
     },
 
     _setLastSyncTime(libraryID, timestamp) {
-        const key = `extensions.zot-data-sync.lastSync.${libraryID}`;
-        Zotero.Prefs.set(key, timestamp, true);
+        Zotero.Prefs.set(`extensions.zot-data-sync.lastSync.${libraryID}`, timestamp, true);
+    },
+
+    // ── Item retrieval (incremental by dateModified) ─────────────────────────
+
+    async getItemsInLibrary(libraryID) {
+        const s = new Zotero.Search();
+        s.libraryID = libraryID;
+        const raw = await s.search();
+        const allIDs = raw ? Array.from(raw) : [];
+        const result = [];
+        for (const id of allIDs) {
+            const item = Zotero.Items.get(id);
+            if (!item) continue;
+            result.push({
+                itemID: item.id,
+                key: item.key,
+                version: item.version,
+                itemTypeID: item.itemTypeID,
+                dateAdded: item.dateAdded,
+                dateModified: item.dateModified,
+                libraryID: item.libraryID,
+            });
+        }
+        return result;
+    },
+
+    // Store synced item keys per library (populated after each sync)
+    _getSyncedKeys(libraryID) {
+        const key = `extensions.zot-data-sync.syncedKeys.${libraryID}`;
+        const raw = Zotero.Prefs.get(key, true);
+        Zotero.debug(`[ZotDataSync] _getSyncedKeys(${libraryID}) raw: ${JSON.stringify(raw)}`);
+        if (typeof raw === 'string' && raw) {
+            try { return new Set(JSON.parse(raw)); } catch(e) {}
+        }
+        return null;
+    },
+
+    _setSyncedKeys(libraryID, keys) {
+        const key = `extensions.zot-data-sync.syncedKeys.${libraryID}`;
+        const val = JSON.stringify([...keys]);
+        Zotero.debug(`[ZotDataSync] _setSyncedKeys(${libraryID}): ${val.slice(0, 200)}`);
+        Zotero.Prefs.set(key, val, true);
     },
 
     async getUnsyncedItems(libraryID) {
-        // Use Zotero JS API for Zotero 9 compatibility
-        const items = await this.getItemsInLibrary(libraryID);
-        Zotero.debug(`[ZotDataSync] Found ${items.length} items in library ${libraryID}`);
-        return items;
+        const allItems = await this.getItemsInLibrary(libraryID);
+        const syncedKeys = this._getSyncedKeys(libraryID);
+
+        if (syncedKeys) {
+            const unsynced = allItems.filter(item => {
+                const skip = syncedKeys.has(item.key);
+                Zotero.debug(`[ZotDataSync] ${skip ? 'SKIP' : 'SYNC'} ${item.key} (synced=${skip})`);
+                return !skip;
+            });
+            Zotero.debug(`[ZotDataSync] Incremental: ${unsynced.length}/${allItems.length} not yet synced`);
+            return unsynced;
+        }
+
+        Zotero.debug(`[ZotDataSync] Full sync: no syncedKeys, syncing all ${allItems.length} items`);
+        return allItems;
     },
 
     // ── Item → API JSON ────────────────────────────────────────────────────────
 
     async buildItemPayload(itemRow) {
-        // Use Zotero Item API instead of raw SQL
-        const item = Zotero.Items.get(itemRow.itemID);
-        if (!item) {
-            throw new Error(`Item ${itemRow.itemID} not found`);
-        }
-
-        const itemType = Zotero.ItemTypes.getName(item.itemTypeID);
-        const creators = item.getCreators();
-        const tags = item.getTags().map(t => ({ tag: t.tag, type: t.type || 1 }));
-        const collections = item.getCollections();
-
-        // Get all fields using getField(fieldName)
-        // These are the standard Zotero API field names
         const apiFields = [
             'title', 'firstName', 'lastName', 'abstractNote', 'url',
             'date', 'publishedDate', 'accessDate',
@@ -191,11 +191,13 @@ ZotDataSync = {
             'mapType', 'scale', 'cartographer', 'mapSeries',
         ];
 
-        // Map non-standard item types
-        const itemTypeMapExtra = { preprint: "document" };
-        const mappedType = itemTypeMapExtra[itemType] || itemType;
+        const item = Zotero.Items.get(itemRow.itemID);
+        if (!item) throw new Error(`Item ${itemRow.itemID} not found`);
 
-        // Annotations have special fields
+        const itemType = Zotero.ItemTypes.getName(item.itemTypeID);
+        const tags = item.getTags().map(t => ({ tag: t.tag, type: t.type || 1 }));
+
+        // Annotation payload
         if (item.isAnnotation()) {
             const parent = item.parentID ? Zotero.Items.get(item.parentID) : null;
             return {
@@ -213,8 +215,9 @@ ZotDataSync = {
             };
         }
 
-        // Non-regular, non-annotation items (notes, attachments, etc.)
-        if (!item.isRegularItem() && !item.isAnnotation()) {
+        // Non-regular, non-annotation items
+        if (!item.isRegularItem()) {
+            const mappedType = itemType === 'preprint' ? 'document' : itemType;
             const payload = {
                 key: itemRow.key,
                 version: 0,
@@ -223,61 +226,53 @@ ZotDataSync = {
                 dateAdded: item.dateAdded,
                 dateModified: item.dateModified,
             };
-            // Attachments need linkMode (must be string: imported_file, imported_url, etc.)
+
+            // Attachment: linkMode must be string
             if (item.isImportedAttachment()) {
                 const lm = item.linkMode;
-                // Zotero 9 linkMode may be int or string; normalize to string name
                 const linkModeMap = { 1: 'imported_file', 2: 'imported_url', 3: 'linked_file', 4: 'linked_url' };
                 payload.linkMode = (typeof lm === 'string') ? lm : (linkModeMap[lm] || 'imported_file');
-                const fn = item.attachmentFilename;
-                if (fn) payload.filename = fn;
-                const sz = item.attachmentSize;
-                if (sz) payload.filesize = sz;
-                const ct = item.attachmentContentType;
-                if (ct) payload.contentType = ct;
-                const md = item.attachmentMD5;
-                if (md) payload.md5 = md;
+                if (item.attachmentFilename) payload.filename = item.attachmentFilename;
+                if (item.attachmentSize) payload.filesize = item.attachmentSize;
+                if (item.attachmentContentType) payload.contentType = item.attachmentContentType;
+                if (item.attachmentMD5) payload.md5 = item.attachmentMD5;
             }
-            // Notes need the note field
+
+            // Note: include note text
             if (mappedType === 'note') {
                 const noteText = item.getField('note');
                 if (noteText) payload.note = noteText;
             }
+
             return payload;
         }
 
-        // Map creators: fieldMode 1 = single field (lastName only)
-        // Skip creators without creatorType
-        const mappedCreators = creators
-            .filter(c => c.creatorType)
-            .map(c => {
-                if (c.fieldMode === 1) {
-                    return { creatorType: c.creatorType, lastName: c.lastName };
-                }
-                return { creatorType: c.creatorType, firstName: c.firstName || "", lastName: c.lastName || "" };
-            });
+        // Regular item
+        const creators = item.getCreators().filter(c => c.creatorType).map(c => {
+            if (c.fieldMode === 1) {
+                return { creatorType: c.creatorType, lastName: c.lastName };
+            }
+            return { creatorType: c.creatorType, firstName: c.firstName || "", lastName: c.lastName || "" };
+        });
 
-        // Build payload, excluding type-inapplicable fields
+        const mappedType = itemType === 'preprint' ? 'document' : itemType;
         const payload = {
             key: itemRow.key,
             version: 0,
             itemType: mappedType,
-            creators: mappedCreators,
+            creators,
             tags,
-            collections,
+            collections: item.getCollections(),
             relations: {},
             dateAdded: item.dateAdded,
             dateModified: item.dateModified,
         };
 
-        // Add regular fields, skipping inapplicable ones
         for (const field of apiFields) {
             try {
                 const val = item.getField(field);
                 if (val) payload[field] = val;
-            } catch (e) {
-                // Field not applicable for this item type, skip
-            }
+            } catch (e) { /* skip inapplicable fields */ }
         }
 
         return payload;
@@ -299,8 +294,7 @@ ZotDataSync = {
         return new Promise((resolve, reject) => {
             const xhr = new XMLHttpRequest();
             xhr.open(options.method || "GET", url, true);
-            const headers = options.headers || {};
-            for (const [k, v] of Object.entries(headers)) {
+            for (const [k, v] of Object.entries(options.headers || {})) {
                 xhr.setRequestHeader(k, v);
             }
             xhr.onload = () => resolve(xhr);
@@ -310,81 +304,166 @@ ZotDataSync = {
     },
 
     async apiGet(path) {
-        const r = await this.httpRequest(`${this.serverURL}${path}`, {
+        return this.httpRequest(`${this.serverURL}${path}`, {
             headers: this._apiHeaders(),
         });
-        return r;
     },
 
     async apiPost(path, body) {
-        const r = await this.httpRequest(`${this.serverURL}${path}`, {
+        return this.httpRequest(`${this.serverURL}${path}`, {
             method: "POST",
             headers: this._apiHeaders(),
             body: JSON.stringify(body),
         });
-        return r;
     },
 
-    async _pingServer() {
-        // GET each library version so the sync attempt is logged server-side
-        const libs = await this.getLibraries();
-        for (const lib of libs) {
-            if (this.libraryFilter === "group" && lib.libraryType !== "group") continue;
-            if (this.libraryFilter === "user" && lib.libraryType !== "user") continue;
-            const path = lib.libraryType === "user"
-                ? `/users/${this.userID}`
-                : `/groups/${lib.libraryID}`;
-            try {
-                const r = await this.apiGet(path + "?format=json");
-                Zotero.debug(`[ZotDataSync] Ping ${path}: ${r.status}`);
-            }
-            catch (e) {
-                Zotero.debug(`[ZotDataSync] ping failed for ${path}: ${e}`);
-            }
+    // ── AWS S3 / MinIO helpers (Signature V4) ────────────────────────────────
+
+    async _sha256(data) {
+        return new Uint8Array(await crypto.subtle.digest('SHA-256', data));
+    },
+
+    async _hmacSha256(key, data) {
+        const cryptoKey = await crypto.subtle.importKey(
+            'raw', key, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']
+        );
+        return new Uint8Array(await crypto.subtle.sign('HMAC', cryptoKey, data));
+    },
+
+    async _s3Sign(method, path, md5Hex, contentType) {
+        const endpoint = this.minioEndpoint;
+        const bucket = this.minioBucket;
+        const accessKey = this.minioAccessKey;
+        const secretKey = this.minioSecretKey;
+        const now = new Date();
+        const dateStr = now.toISOString().replace(/[-:]/g, '').split('.')[0] + 'Z';
+        const dateShort = dateStr.slice(0, 8);
+        const region = 'us-east-1';
+        const host = endpoint;
+        const service = 's3';
+        const algorithm = 'AWS4-HMAC-SHA256';
+        const credentialScope = `${dateShort}/${region}/${service}/aws4_request`;
+        const signedHeaders = 'content-type;host;x-amz-content-sha256;x-amz-date';
+        const canonicalHeaders = [
+            `content-type:${contentType}`,
+            `host:${host}`,
+            `x-amz-content-sha256:${md5Hex}`,
+            `x-amz-date:${dateStr}`,
+        ].join('\n') + '\n';
+
+        const canonicalRequest = [
+            method, path, '', canonicalHeaders, signedHeaders, md5Hex,
+        ].join('\n');
+
+        const hashedReq = Array.from(
+            new Uint8Array(await this._sha256(new TextEncoder().encode(canonicalRequest)))
+        ).map(b => b.toString(16).padStart(2, '0')).join('');
+
+        const stringToSign = [algorithm, dateStr, credentialScope, hashedReq].join('\n');
+
+        const signingKey = await this._hmacSha256(
+            await this._hmacSha256(
+                await this._hmacSha256(
+                    await this._hmacSha256(
+                        new TextEncoder().encode('AWS4' + secretKey), dateShort),
+                    region),
+                service),
+            'aws4_request');
+
+        const signature = Array.from(
+            await this._hmacSha256(signingKey, new TextEncoder().encode(stringToSign))
+        ).map(b => b.toString(16).padStart(2, '0')).join('');
+
+        return {
+            date: dateStr,
+            auth: `${algorithm} Credential=${accessKey}/${credentialScope}, SignedHeaders=${signedHeaders}, Signature=${signature}`,
+        };
+    },
+
+    async _minioHead(md5) {
+        const path = `/${this.minioBucket}/${md5}`;
+        const emptyHash = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855';
+        const { date, auth } = await this._s3Sign('HEAD', path, emptyHash, '');
+        const url = `https://${this.minioEndpoint}${path}`;
+        try {
+            const r = await this.httpRequest(url, {
+                method: 'HEAD',
+                headers: {
+                    'x-amz-date': date,
+                    'Authorization': auth,
+                },
+            });
+            return r.status === 200;
+        } catch (e) {
+            return false;
         }
     },
+
+    async _minioPut(fileBytes, md5, contentType) {
+        const path = `/${this.minioBucket}/${md5}`;
+        const url = `https://${this.minioEndpoint}${path}`;
+        const { date, auth } = await this._s3Sign('PUT', path, md5, contentType);
+        return new Promise((resolve, reject) => {
+            const xhr = new XMLHttpRequest();
+            xhr.open('PUT', url, true);
+            xhr.setRequestHeader('Content-Type', contentType);
+            xhr.setRequestHeader('x-amz-date', date);
+            xhr.setRequestHeader('x-amz-content-sha256', md5);
+            xhr.setRequestHeader('Authorization', auth);
+            xhr.onload = () => {
+                if (xhr.status === 200) {
+                    resolve(true);
+                } else {
+                    reject(new Error(`MinIO PUT failed: ${xhr.status}`));
+                }
+            };
+            xhr.onerror = () => reject(new Error('MinIO network error'));
+            xhr.send(new Uint8Array(fileBytes));
+        });
+    },
+
+    async _getAttachmentFile(item) {
+        if (!item.isImportedAttachment()) return null;
+        try {
+            const path = item.getFilePath();
+            if (!path) return null;
+            const file = await OS.File.read(path, { binary: true });
+            return { path, data: file };
+        } catch (e) {
+            Zotero.debug(`[ZotDataSync] Could not read attachment: ${e}`);
+            return null;
+        }
+    },
+
+    // ── Core sync ─────────────────────────────────────────────────────────────
 
     async doSync() {
         const start = Date.now();
         Zotero.debug("[ZotDataSync] Starting sync...");
-        Zotero.debug(`[ZotDataSync] Server: ${this.serverURL}, UserID: ${this.userID}, Filter: ${this.libraryFilter}`);
 
         try {
-            // Always hit the server to log the sync attempt
-            await this._pingServer();
-            Zotero.debug("[ZotDataSync] Ping done");
-
-            // Resolve server group IDs
+            // Resolve server group IDs: local libraryID = server group id (empirical)
             const serverGroups = await this.getServerGroups();
-            Zotero.debug(`[ZotDataSync] Server groups: ${JSON.stringify(serverGroups)}`);
-            // Map by server ID AND by name (for fallback)
             const groupMapByID = new Map(serverGroups.map(g => [g.id, g.name]));
-            const groupMapByName = new Map(serverGroups.map(g => [g.name, g.id]));
 
             const libs = await this.getLibraries();
-            Zotero.debug(`[ZotDataSync] Local libs: ${libs.map(l => l.name + '(' + l.libraryType + ', id=' + l.libraryID + ')').join(', ')}`);
-            let totalSynced = 0;
-            let totalErrors = 0;
+            let totalSynced = 0, totalErrors = 0;
 
             for (const lib of libs) {
                 if (this.libraryFilter === "group" && lib.libraryType !== "group") continue;
                 if (this.libraryFilter === "user" && lib.libraryType !== "user") continue;
 
-                let serverID;
-                if (lib.libraryType === "user") {
-                    serverID = this.userID;
-                } else {
-                    // Try by ID first (Zotero: local libraryID = server group id)
-                    serverID = groupMapByID.has(lib.libraryID) ? lib.libraryID : groupMapByName.get(lib.name);
-                }
+                // For groups: local libraryID = server group id
+                const serverID = lib.libraryType === "user"
+                    ? this.userID
+                    : lib.libraryID;
 
-                if (!serverID) {
+                if (lib.libraryType === "group" && !groupMapByID.has(serverID)) {
                     Zotero.debug(`[ZotDataSync] Group '${lib.name}' (id=${lib.libraryID}) not on server, skipping`);
                     continue;
                 }
 
                 Zotero.debug(`[ZotDataSync] Syncing [${lib.libraryType}] ${lib.name} → server ID ${serverID}`);
-
                 const { synced, errors } = await this._syncItems(lib, serverID);
                 totalSynced += synced;
                 totalErrors += errors;
@@ -392,7 +471,6 @@ ZotDataSync = {
 
             const ms = Date.now() - start;
             Zotero.debug(`[ZotDataSync] Done: ${totalSynced} synced, ${totalErrors} errors in ${ms}ms`);
-
             this.showStatus(
                 totalErrors === 0
                     ? `Sync complete: ${totalSynced} items uploaded`
@@ -411,14 +489,13 @@ ZotDataSync = {
             return { synced: 0, errors: 0 };
         }
 
-        Zotero.debug(`[ZotDataSync] Building ${items.length} item payloads...`);
+        // Build payloads
         const payloads = [];
         for (const item of items) {
             try {
                 payloads.push(await this.buildItemPayload(item));
-            }
-            catch (e) {
-                Zotero.debug(`[ZotDataSync] Error building item ${item.key}: ${e}`);
+            } catch (e) {
+                Zotero.debug(`[ZotDataSync] buildItemPayload ${item.key} failed: ${e}`);
             }
         }
 
@@ -429,7 +506,7 @@ ZotDataSync = {
         let successKeys = new Set();
         let errors = 0;
 
-        // Upload in batches of 50
+        // Batch upload (50 per batch)
         for (let i = 0; i < payloads.length; i += 50) {
             const chunk = payloads.slice(i, i + 50);
             const chunkItems = items.slice(i, i + 50);
@@ -442,79 +519,91 @@ ZotDataSync = {
             }
 
             let data;
-            try {
-                data = JSON.parse(r.responseText);
-            }
-            catch (e) {
-                Zotero.debug(`[ZotDataSync] Non-JSON response: ${r.responseText}`);
-                errors += chunk.length;
-                continue;
-            }
+            try { data = JSON.parse(r.responseText); }
+            catch (e) { errors += chunk.length; continue; }
 
-            // Collect successful keys
             for (const [, val] of Object.entries(data.successful || {})) {
                 if (val?.key) successKeys.add(val.key);
             }
-            for (const [key, val] of Object.entries(data.success || {})) {
+            for (const [, val] of Object.entries(data.success || {})) {
                 if (val?.key) successKeys.add(val.key);
             }
-            for (const [key, val] of Object.entries(data.unchanged || {})) {
+            for (const [, val] of Object.entries(data.unchanged || {})) {
                 if (val?.key) successKeys.add(val.key);
             }
-            // 412 = already exists on server → treat as synced
             for (const [idx, val] of Object.entries(data.failed || {})) {
                 if (val?.code === 412 && chunk[parseInt(idx)]?.key) {
                     successKeys.add(chunk[parseInt(idx)].key);
                 }
-            }
-
-            for (const item of chunkItems) {
-                if (!successKeys.has(item.key)) {
-                    const err = data.failed?.[String(chunkItems.indexOf(item))];
-                    Zotero.debug(`[ZotDataSync] Item ${item.key} failed: ${err?.code} ${err?.message}`);
+                if (!successKeys.has(chunk[parseInt(idx)]?.key)) {
+                    Zotero.debug(`[ZotDataSync] Item ${chunk[parseInt(idx)]?.key} failed: ${val?.code} ${val?.message}`);
                     errors++;
                 }
             }
         }
 
-        // Update our own sync timestamp after upload attempt
-        const now = new Date().toISOString();
-        this._setLastSyncTime(lib.libraryID, now);
-        Zotero.debug(`[ZotDataSync] Updated last sync time to ${now}`);
+        // Upload attachment files to MinIO
+        let uploadedFiles = 0;
+        if (this.syncAttachments) {
+            for (const item of items) {
+                if (!successKeys.has(item.key)) continue;
+                const zItem = Zotero.Items.get(item.itemID);
+                if (!zItem || !zItem.isImportedAttachment()) continue;
+                const lm = zItem.linkMode;
+                if (lm !== 1 && lm !== 'imported_file') continue;
 
+                const md5 = zItem.attachmentMD5;
+                if (!md5) continue;
+
+                try {
+                    const exists = await this._minioHead(md5);
+                    if (exists) {
+                        Zotero.debug(`[ZotDataSync] File ${md5} already in MinIO`);
+                    } else {
+                        const fileInfo = await this._getAttachmentFile(zItem);
+                        if (!fileInfo) continue;
+                        const ct = zItem.attachmentContentType || 'application/octet-stream';
+                        await this._minioPut(fileInfo.data, md5, ct);
+                        Zotero.debug(`[ZotDataSync] Uploaded ${md5} to MinIO`);
+                    }
+                    uploadedFiles++;
+                } catch (e) {
+                    Zotero.debug(`[ZotDataSync] MinIO error for ${item.key}: ${e}`);
+                }
+            }
+        }
+
+        Zotero.debug(`[ZotDataSync] Uploaded ${uploadedFiles} attachment files`);
+        // Store synced keys for incremental sync
+        this._setSyncedKeys(lib.libraryID, successKeys);
         return { synced: successKeys.size, errors };
     },
 
-    // ── UI: Toolbar Button & Menu ─────────────────────────────────────────────
+    // ── UI ───────────────────────────────────────────────────────────────────
 
     addToWindow(window) {
         const doc = window.document;
 
-        // Toolbar button: clone the lookup button and insert before search
+        // Toolbar button
         const toolbar = doc.querySelector("#zotero-items-toolbar");
         if (toolbar) {
             const lookupNode = toolbar.querySelector("#zotero-tb-lookup");
             const searchNode = toolbar.querySelector("#zotero-tb-search");
             if (lookupNode) {
-                // cloneNode(false) = shallow clone, no event listeners
                 const btn = doc.createXULElement("toolbarbutton");
                 btn.id = "zot-data-sync-toolbar-btn";
                 btn.setAttribute("class", lookupNode.getAttribute("class") || "toolbar-button");
                 btn.setAttribute("tooltiptext", "ZotData Sync");
                 btn.setAttribute("type", "button");
-                // Use data URI PNG for reliable XUL rendering
                 btn.style.listStyleImage = "url(data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAL0lEQVR4nGNgGFQgoOfDf2IwRYZQ5BKKvEOSZqqBLSc+/AfhkWQAxQlp4A0YEAAAO/i9V17Ro+QAAAAASUVORK5CYII=)";
                 btn.addEventListener("command", () => this.doSync());
-                if (searchNode) {
-                    toolbar.insertBefore(btn, searchNode);
-                } else {
-                    toolbar.appendChild(btn);
-                }
+                if (searchNode) toolbar.insertBefore(btn, searchNode);
+                else toolbar.appendChild(btn);
                 this._addedElements.push(btn.id);
             }
         }
 
-        // Menu item under Tools
+        // Menu item
         const mi = doc.createXULElement("menuitem");
         mi.id = "zot-data-sync-menuitem";
         mi.setAttribute("label", "Sync to Custom Server");
@@ -565,23 +654,8 @@ ZotDataSync = {
     // ── Status notification ───────────────────────────────────────────────────
 
     showStatus(message) {
-        const windows = Zotero.getMainWindows();
-        if (!windows.length) return;
-        const win = windows[0];
-        if (win.Zotero?.Pane?.itemTree?.view) {
-            // Use Zotero's progress window if available
-            try {
-                const pw = new win.Zotero.ProgressWindow({ closeOnClick: true });
-                pw.changeHeadline("ZotData Sync");
-                pw.addLines([message]);
-                pw.show();
-            }
-            catch (e) {
-                win.alert(`ZotData Sync:\n${message}`);
-            }
-        }
-        else {
-            win.alert(`ZotData Sync:\n${message}`);
-        }
+        const win = Zotero.getMainWindows()[0];
+        if (!win) return;
+        win.alert(`ZotData Sync:\n${message}`);
     },
 };
