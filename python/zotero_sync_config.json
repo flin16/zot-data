@@ -9,7 +9,7 @@
     "minio_access_key": "minioadmin",
     "minio_secret_key": "minioadmin",
     "minio_bucket": "zotero",
-    "minio_secure": true,
+    "minio_secure": false,
     "sync_attachments": true,
     "dry_run": false,
     "library_filter": "group"
