@@ -242,11 +242,29 @@ ZotDataSync = {
         return r;
     },
 
-    // ── Sync ───────────────────────────────────────────────────────────────────
+    async _pingServer() {
+        // GET each library version so the sync attempt is logged server-side
+        for (const lib of await this.getLibraries()) {
+            if (this.libraryFilter === "group" && lib.libraryType !== "group") continue;
+            if (this.libraryFilter === "user" && lib.libraryType !== "user") continue;
+            const path = lib.libraryType === "user"
+                ? `/users/${this.userID}`
+                : `/groups/${lib.serverGroupID}`;
+            try {
+                await this.apiGet(path + "?format=json");
+            }
+            catch (e) {
+                Zotero.debug(`[ZotDataSync] ping failed for ${path}: ${e}`);
+            }
+        }
+    },
 
     async doSync() {
         const start = Date.now();
         Zotero.debug("[ZotDataSync] Starting sync...");
+
+        // Always hit the server to log the sync attempt
+        await this._pingServer();
 
         try {
             // Resolve server group IDs
