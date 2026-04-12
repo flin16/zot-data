@@ -294,10 +294,10 @@ class LocalDB:
 
     def _creator_type_name(self, creator_type_id: int) -> str:
         row = self.db.execute(
-            "SELECT typeName FROM creatorTypes WHERE creatorTypeID = ?",
+            "SELECT creatorType FROM creatorTypes WHERE creatorTypeID = ?",
             (creator_type_id,)
         ).fetchone()
-        return row["typeName"] if row else "author"
+        return row["creatorType"] if row else "author"
 
     def get_item_type(self, item_type_id: int) -> str:
         row = self.db.execute(
@@ -479,13 +479,15 @@ class SyncEngine:
         )
         self.local = LocalDB(config["local_db"])
         self.converter = ItemConverter(self.local)
-        self.storage = StorageClient(
-            config["minio_endpoint"],
-            config["minio_access_key"],
-            config["minio_secret_key"],
-            config["minio_bucket"],
-            config["minio_secure"],
-        )
+        self.storage = None
+        if config.get("sync_attachments", False):
+            self.storage = StorageClient(
+                config["minio_endpoint"],
+                config["minio_access_key"],
+                config["minio_secret_key"],
+                config["minio_bucket"],
+                config["minio_secure"],
+            )
         self.dry_run = config["dry_run"]
         self.stats = {"upload": 0, "download": 0, "skip": 0, "error": 0}
 

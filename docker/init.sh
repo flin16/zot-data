@@ -41,6 +41,12 @@ if ! mysql_u "$MYSQL_DB" -e "SELECT 1 FROM libraries LIMIT 1" >/dev/null 2>&1; t
         INSERT IGNORE INTO groupUsers VALUES (1, 1, 'owner', NOW(), NOW());
     "
 
+    # Register libraries in shardLibraries so foreign keys resolve
+    mysql_u "$MYSQL_DB" -e "
+        INSERT IGNORE INTO shardLibraries (shardID, libraryID) VALUES (1, 1);
+        INSERT IGNORE INTO shardLibraries (shardID, libraryID) VALUES (2, 2);
+    "
+
     echo "[init] Loading schema into ids..."
     mysql_u ids -e "SOURCE ids.sql;" 2>/dev/null || true
 
