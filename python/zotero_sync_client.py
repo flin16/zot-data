@@ -355,6 +355,13 @@ class LocalDB:
             (item_id,)
         )
 
+    def mark_attachment_synced(self, item_id: int):
+        """Mark an attachment item as synced (updates syncState on itemAttachments)."""
+        self.db.execute(
+            "UPDATE itemAttachments SET syncState = 1 WHERE itemID = ?",
+            (item_id,)
+        )
+
     def commit(self):
         self.db.commit()
 
@@ -743,11 +750,15 @@ class SyncEngine:
                 else:
                     log.info(f"File {md5} already in storage, skipping upload")
 
+                # 3. Mark attachment as synced locally
+                self.local.mark_attachment_synced(att["itemID"])
                 self.stats["upload"] += 1
 
             except Exception as e:
                 log.error(f"Error syncing attachment {key}: {e}")
                 self.stats["error"] += 1
+
+        self.local.commit()
 
 
 # ─── CLI ─────────────────────────────────────────────────────────────────────
