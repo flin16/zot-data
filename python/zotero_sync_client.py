@@ -414,11 +414,22 @@ class ItemConverter:
         rows = self.db.db.execute("SELECT fieldID, fieldName FROM fieldsCombined").fetchall()
         self.FIELD_MAP = {r["fieldID"]: r["fieldName"] for r in rows}
 
+    # Non-standard fields that exist in local SQLite but are not part of the
+    # Zotero API schema — must be stripped before uploading.
+    NON_API_FIELDS = frozenset([
+        "repository", "citationKey", "archiveID",
+        "accessDate",  # use dateAdded/dateModified instead
+    ])
+
     def to_json(self, item_row: dict, library_context: dict = None) -> dict:
         item_id = item_row["itemID"]
         item_type = self.ITEM_TYPE_MAP.get(item_row["itemTypeID"], "journalArticle")
 
         data = self.db.get_item_data(item_id)
+        # Strip non-API fields to avoid server rejection
+        for field in self.NON_API_FIELDS:
+            data.pop(field, None)
+
         creators = self.db.get_item_creators(item_id)
 
         result = {
