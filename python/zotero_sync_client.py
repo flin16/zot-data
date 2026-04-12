@@ -718,11 +718,13 @@ class SyncEngine:
                     continue
 
                 # Build attachment item JSON with linkMode (required by server)
+                # Zotero API expects string names, not integers
+                link_mode_names = {0: "imported_file", 1: "imported_url", 2: "linked_file", 3: "linked_url"}
                 att_item = {
                     "key": key,
                     "version": 0,
                     "itemType": "attachment",
-                    "linkMode": link_mode,
+                    "linkMode": link_mode_names.get(link_mode, "imported_file"),
                     "filename": filename,
                     "contentType": content_type,
                     "md5": md5,
