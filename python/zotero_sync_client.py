@@ -607,14 +607,28 @@ class SyncEngine:
             try:
                 r = self.api.post_items(chunk, library_type=library_type, library_id=server_library_id)
                 if r.status_code in (200, 201):
-                    for item in chunk:
-                        item_row = next(
-                            x for x in items
-                            if x["key"] == item["key"]
-                        )
-                        self.local.mark_synced(item_row["itemID"], item.get("version", 0))
-                    log.info(f"Uploaded {len(chunk)} items OK")
-                    self.stats["upload"] += len(chunk)
+                    # Parse response to find successfully created items
+                    # Zotero returns: {"results": [{"key": "...", "version": N}]}
+                    # Server-side failures are included in results with no key/version
+                    try:
+                        data = r.json()
+                        results = data.get("results", []) if isinstance(data, dict) else (data or [])
+                        success_keys = set()
+                        for result in results:
+                            if isinstance(result, dict) and result.get("key"):
+                                success_keys.add(result["key"])
+                        for item in chunk:
+                            item_row = next(x for x in items if x["key"] == item["key"])
+                            if item["key"] in success_keys:
+                                self.local.mark_synced(item_row["itemID"], 0)
+                            else:
+                                log.warning(f"Item {item['key']} not accepted by server")
+                                self.stats["error"] += 1
+                        self.stats["upload"] += len(success_keys)
+                        log.info(f"Uploaded {len(success_keys)}/{len(chunk)} items OK")
+                    except Exception as parse_err:
+                        log.error(f"Failed to parse response: {parse_err}")
+                        self.stats["error"] += len(chunk)
                 else:
                     log.error(f"Upload failed: {r.status_code} {r.text[:200]}")
                     self.stats["error"] += len(chunk)
