@@ -36,7 +36,7 @@ DEFAULT_CONFIG = {
     "user_id": 1,
     "library_id": 1,
     "local_db": os.path.expanduser("~/Zotero/zotero.sqlite"),
-    "minio_endpoint": "localhost:9000",
+    "minio_endpoint": "s3.0und.com",
     "minio_access_key": "minioadmin",
     "minio_secret_key": "minioadmin",
     "minio_bucket": "zotero",
