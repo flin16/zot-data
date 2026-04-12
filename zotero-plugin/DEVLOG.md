@@ -71,3 +71,53 @@ if (mappedType === 'note') {
 ### 结果
 - math 组：5 items → 5 synced, 0 errors ✓
 - 插件成功将本地库内容 POST 到自建 Zotero 服务器
+
+### 补充：同步所有 item 类型
+
+**现象**：math 组有 43 项（Zotero MCP 显示），插件只找到 5→3→4 项
+
+**诊断发现**：
+- `Zotero.Search` 不带条件返回 8 项（不是 43），搜索只返回 library 根级别的 item
+- 其中 3 项 regular items，5 项 annotations
+- `isRegularItem()` 过滤掉 annotations、notes、embedded images 等
+
+**修复**：不过滤，同步所有 item，按类型分别处理：
+
+```javascript
+// Annotation: parentItem 字段（不是 parentItemID）
+if (item.isAnnotation()) {
+    return {
+        itemType: 'annotation',
+        annotationType: item.annotationType,
+        annotationText: item.annotationText,
+        annotationColor: item.annotationColor,
+        annotationPageLabel: item.annotationPageLabel,
+        parentItem: parent?.key || '',
+        // ...
+    };
+}
+
+// Attachment: linkMode 必须是字符串
+if (item.isImportedAttachment()) {
+    const linkModeMap = { 1: 'imported_file', 2: 'imported_url',
+                          3: 'linked_file', 4: 'linked_url' };
+    payload.linkMode = linkModeMap[item.linkMode] || 'imported_file';
+    payload.filename = item.attachmentFilename;
+    payload.filesize = item.attachmentSize;
+    payload.contentType = item.attachmentContentType;
+    payload.md5 = item.attachmentMD5;
+}
+
+// Note: 使用 note 字段
+if (mappedType === 'note') {
+    payload.note = item.getField('note');
+}
+```
+
+**Zotero API itemType 类型**：
+| 类型 | 特殊字段 |
+|---|---|
+| annotation | annotationType, annotationText, annotationColor, parentItem |
+| attachment | linkMode (string), filename, filesize, contentType, md5 |
+| note | note |
+| regular | standard API fields |
