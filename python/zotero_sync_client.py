@@ -415,6 +415,10 @@ class ItemConverter:
         rows = self.db.db.execute("SELECT fieldID, fieldName FROM fieldsCombined").fetchall()
         self.FIELD_MAP = {r["fieldID"]: r["fieldName"] for r in rows}
 
+    def is_attachment(self, item_row: dict) -> bool:
+        """Return True if this item is an attachment (skip from item API, sync via MinIO)."""
+        return self.ITEM_TYPE_MAP.get(item_row["itemTypeID"]) == "attachment"
+
     # Non-standard fields that exist in local SQLite but are not part of the
     # Zotero API schema — must be stripped before uploading.
     NON_API_FIELDS = frozenset([
@@ -585,13 +589,19 @@ class SyncEngine:
         server_library_id: server-side library ID (for API calls).
         """
         items = self.local.get_items(library_id)
-        if not items:
+        # Filter out attachments — they sync via _sync_attachments (MinIO + file registration)
+        non_attachment = [it for it in items if not self.converter.is_attachment(it)]
+        attachment_keys = [it["key"] for it in items if self.converter.is_attachment(it)]
+        if attachment_keys:
+            log.info(f"Skipping {len(attachment_keys)} attachment items (handled by _sync_attachments)")
+
+        if not non_attachment:
             log.info("No unsynced items to upload")
             return
 
-        log.info(f"Uploading {len(items)} items...")
+        log.info(f"Uploading {len(non_attachment)} items...")
         batch = []
-        for item_row in items:
+        for item_row in non_attachment:
             try:
                 json_item = self.converter.to_json(item_row)
                 batch.append(json_item)
@@ -662,7 +672,7 @@ class SyncEngine:
         self.local.commit()
 
     def _sync_attachments(self, library_type: str, library_id: int, server_library_id: int):
-        """Upload local attachments to MinIO + register on server"""
+        """Upload local attachments to MinIO and create item on server."""
         attachments = self.local.get_attachments(library_id)
         if not attachments:
             log.info("No attachments to sync")
@@ -673,21 +683,18 @@ class SyncEngine:
             key = att["key"]
             local_path = att.get("path", "")
             link_mode = att.get("linkMode", 0)
+            content_type = att.get("contentType", "application/octet-stream")
 
-            if link_mode == 3:  # linked URL
-                log.info(f"Skipping linked URL: {key}")
-                self.stats["skip"] += 1
-                continue
-
-            if link_mode == 2:  # linked file
-                log.info(f"Skipping linked file: {key}")
+            # linked URL or linked file — skip (can't sync external links)
+            if link_mode in (2, 3):
+                log.info(f"Skipping linkMode={link_mode}: {key}")
                 self.stats["skip"] += 1
                 continue
 
             # Imported file (path is "storage:filename.pdf")
+            filename = None
             if local_path and local_path.startswith("storage:"):
-                filename = local_path[8:]  # strip "storage:"
-                key = att["key"]
+                filename = local_path[8:]
                 data_dir = Path(self.cfg["local_db"]).parent
                 local_path = str(data_dir / "storage" / key / filename)
 
@@ -703,17 +710,40 @@ class SyncEngine:
                     self.stats["error"] += 1
                     continue
 
-                # Check if already in MinIO
-                if self.storage.file_exists(md5):
-                    log.info(f"File {md5} already in storage, skipping upload")
+                # Build attachment item JSON with linkMode (required by server)
+                att_item = {
+                    "key": key,
+                    "version": 0,
+                    "itemType": "attachment",
+                    "linkMode": link_mode,
+                    "filename": filename,
+                    "contentType": content_type,
+                    "md5": md5,
+                }
+
+                if self.dry_run:
+                    log.info(f"[DRY RUN] Would upload {filename or key} as {md5}")
                     self.stats["skip"] += 1
+                    continue
+
+                # 1. Create attachment item on server
+                r = self.api.post_items(
+                    [att_item],
+                    library_type=library_type,
+                    library_id=server_library_id,
+                )
+                if r.status_code not in (200, 201):
+                    log.error(f"Attachment item creation failed ({r.status_code}): {r.text[:200]}")
+                    self.stats["error"] += 1
+                    continue
+
+                # 2. Upload file to MinIO (keyed by MD5 hash)
+                if not self.storage.file_exists(md5):
+                    self.storage.upload_file(local_path, md5)
                 else:
-                    # Upload to MinIO directly
-                    if not self.dry_run:
-                        self.storage.upload_file(local_path, md5)
-                    else:
-                        log.info(f"[DRY RUN] Would upload {local_path} as {md5}")
-                    self.stats["upload"] += 1
+                    log.info(f"File {md5} already in storage, skipping upload")
+
+                self.stats["upload"] += 1
 
             except Exception as e:
                 log.error(f"Error syncing attachment {key}: {e}")
