@@ -1,0 +1,18 @@
+{
+    "manifest_version": 2,
+    "name": "ZotData Sync",
+    "version": "0.1.0",
+    "description": "Sync items to a custom self-hosted Zotero server",
+    "author": "Zeround",
+    "homepage_url": "https://github.com/zeround/zot-data",
+    "applications": {
+        "zotero": {
+            "id": "zot-data-sync@0und.com",
+            "strict_min_version": "7.0"
+        }
+    },
+    "default_locale": "en-US",
+    "resources": {
+        "zot-data-sync": "resources/"
+    }
+}
