@@ -4,7 +4,7 @@
     "password": "adminpass",
     "user_id": 1,
     "library_id": 1,
-    "local_db": "/home/lfy/Zotero/zotero.sqlite",
+    "local_db": "~/Library/Application Support/Zotero/zotero.sqlite",
     "minio_endpoint": "s3.0und.com",
     "minio_access_key": "minioadmin",
     "minio_secret_key": "minioadmin",

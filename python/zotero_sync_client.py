@@ -11,6 +11,7 @@ import sys
 import hashlib
 import logging
 import io
+import platform
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -29,13 +30,26 @@ log = logging.getLogger("zotero_sync")
 
 # ─── Config ─────────────────────────────────────────────────────────────────
 
+
+def _default_local_db() -> str:
+    """Return platform-appropriate Zotero database path."""
+    home = Path.home()
+    if platform.system() == "Darwin":
+        base = home / "Library" / "Application Support" / "Zotero"
+    elif platform.system() == "Windows":
+        base = Path(os.environ.get("APPDATA", home / "AppData" / "Roaming")) / "Zotero" / "Zotero"
+    else:  # Linux / other
+        base = home / "Zotero"
+    return str(base / "zotero.sqlite")
+
+
 DEFAULT_CONFIG = {
     "api_url": "https://zot.0und.com",
     "username": "admin",
     "password": os.getenv("ZOTERO_PASSWORD", "adminpass"),
     "user_id": 1,
     "library_id": 1,
-    "local_db": os.path.expanduser("~/Zotero/zotero.sqlite"),
+    "local_db": _default_local_db(),
     "minio_endpoint": "s3.0und.com",
     "minio_access_key": "minioadmin",
     "minio_secret_key": "minioadmin",
@@ -184,6 +198,7 @@ class ZoteroAPI:
 
 class LocalDB:
     def __init__(self, db_path: str):
+        Path(db_path).parent.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(db_path, timeout=30)
         self.db.row_factory = sqlite3.Row
 
@@ -573,7 +588,7 @@ class SyncEngine:
             if local_path and local_path.startswith("storage:"):
                 filename = local_path[8:]  # strip "storage:"
                 key = att["key"]
-                data_dir = Path(self.cfg.get("local_db", "~/Zotero/zotero.sqlite")).parent
+                data_dir = Path(self.cfg["local_db"]).parent
                 local_path = str(data_dir / "storage" / key / filename)
 
             if not local_path or not Path(local_path).exists():
