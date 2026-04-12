@@ -421,9 +421,16 @@ class ItemConverter:
         "accessDate",  # use dateAdded/dateModified instead
     ])
 
-    def to_json(self, item_row: dict, library_context: dict = None) -> dict:
+    # Map non-standard itemType names that the server doesn't recognize.
+    ITEM_TYPE_MAP_EXTRA = {
+        "preprint": "document",
+    }
+
+    def to_json(self, item_row: dict) -> dict:
         item_id = item_row["itemID"]
         item_type = self.ITEM_TYPE_MAP.get(item_row["itemTypeID"], "journalArticle")
+        # Apply type aliasing for non-standard types
+        item_type = self.ITEM_TYPE_MAP_EXTRA.get(item_type, item_type)
 
         data = self.db.get_item_data(item_id)
         # Strip non-API fields to avoid server rejection
@@ -443,8 +450,6 @@ class ItemConverter:
             "dateAdded": item_row["dateAdded"],
             "dateModified": item_row["dateModified"],
         }
-        if library_context:
-            result["library"] = library_context
         result.update(data)
         return result
 
@@ -583,17 +588,11 @@ class SyncEngine:
             log.info("No unsynced items to upload")
             return
 
-        # Build Zotero API library context for item JSON
-        if library_type == "user":
-            library_context = {"type": "user", "id": server_library_id}
-        else:
-            library_context = {"type": "group", "id": server_library_id}
-
         log.info(f"Uploading {len(items)} items...")
         batch = []
         for item_row in items:
             try:
-                json_item = self.converter.to_json(item_row, library_context=library_context)
+                json_item = self.converter.to_json(item_row)
                 batch.append(json_item)
             except Exception as e:
                 log.error(f"Error converting item {item_row['key']}: {e}")
