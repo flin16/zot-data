@@ -8,11 +8,9 @@
     "applications": {
         "zotero": {
             "id": "zot-data-sync@0und.com",
-            "strict_min_version": "7.0"
+            "strict_min_version": "8.0",
+            "strict_max_version": "9.9.9",
+            "update_url": "https://zot.0und.com/updates.json"
         }
-    },
-    "default_locale": "en-US",
-    "resources": {
-        "zot-data-sync": "resources/"
     }
 }
