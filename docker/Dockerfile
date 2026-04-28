@@ -56,10 +56,12 @@ RUN cd /var/www/html && composer install --no-dev --prefer-dist --no-scripts --i
 # ── tmp directory ──────────────────────────────────────────────────────────────
 RUN mkdir -p /var/www/html/tmp /var/www/html/tmp/cache && chmod 777 /var/www/html/tmp
 
-# ── Apache ─────────────────────────────────────────────────────────────────────
+# ── Apache: listen on 8080, set DocumentRoot to htdocs ──────────────────────
 RUN a2enmod rewrite headers \
+    && sed -i 's/Listen 80/Listen 8080/' /etc/apache2/ports.conf \
+    && sed -i 's|<VirtualHost \*:[0-9]*>|<VirtualHost *:8080>|' /etc/apache2/sites-available/000-default.conf \
+    && sed -i '0,/DocumentRoot/s|DocumentRoot /var/www/html|DocumentRoot /var/www/html/htdocs|' /etc/apache2/sites-available/000-default.conf \
     && echo "ServerName localhost" >> /etc/apache2/apache2.conf
-COPY apache2-site.conf /etc/apache2/sites-available/000-default.conf
 COPY php.ini /usr/local/etc/php/conf.d/docker-php-custom.ini
 
 # ── Init script ────────────────────────────────────────────────────────────────
@@ -68,5 +70,5 @@ COPY init-schema.php /init-schema.php
 RUN chmod +x /init.sh
 
 WORKDIR /var/www/html
-EXPOSE 80
+EXPOSE 8080
 ENTRYPOINT ["/init.sh"]

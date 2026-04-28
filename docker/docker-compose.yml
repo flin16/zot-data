@@ -5,37 +5,32 @@ services:
       dockerfile: Dockerfile
       args:
         DATASERVER_REF: master
-    ports:
-      - "${ZOTERO_API_PORT:-23231}:80"
+    network_mode: host
     environment:
-      - MYSQL_HOST=${MYSQL_HOST:-host.docker.internal}
-      - MYSQL_USER=${MYSQL_USER:-zotero}
-      - ZOTERO_MYSQL_PASS=${ZOTERO_MYSQL_PASS:-zotropass}
-      - MYSQL_DATABASE=${MYSQL_DATABASE:-zotero}
+      - DB_HOST=127.0.0.1
+      - DB_USER=${DB_USER:-zotero}
+      - DB_PASS=${DB_PASS:-zotropass}
+      - DB_NAME=${DB_NAME:-zotero}
       - ADMIN_USERNAME=${ADMIN_USERNAME:-admin}
       - ADMIN_PASSWORD=${ADMIN_PASSWORD:-adminpass}
-      - S3_ENDPOINT=minio:${MINIO_PORT:-9000}
+      - S3_ENDPOINT=127.0.0.1:${MINIO_PORT:-9000}
       - S3_PUBLIC_ENDPOINT=${S3_PUBLIC_ENDPOINT:-http://localhost:${MINIO_PORT:-9000}}
       - AWS_ACCESS_KEY_ID=${MINIO_ROOT_USER:-minioadmin}
       - AWS_SECRET_ACCESS_KEY=${MINIO_ROOT_PASSWORD:-minioadmin}
+      - REDIS_HOST=${REDIS_HOST:-127.0.0.1}
+      - REDIS_PORT=${REDIS_PORT:-6379}
       - REDIS_PASSWORD=${REDIS_PASSWORD:-}
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     depends_on:
       minio:
         condition: service_healthy
-    networks:
-      - dataserver
 
   minio:
     image: minio/minio
+    network_mode: host
     command: server /data --console-address ":${MINIO_CONSOLE_PORT:-9001}"
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
-    ports:
-      - "${MINIO_PORT:-9000}:9000"
-      - "${MINIO_CONSOLE_PORT:-9001}:9001"
     volumes:
       - minio_data:/data
     healthcheck:
@@ -43,12 +38,18 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-    networks:
-      - dataserver
+
+  stream:
+    build:
+      context: .
+      dockerfile: Dockerfile.stream
+    network_mode: host
+    environment:
+      - NODE_ENV=production
+      - REDIS_HOST=${REDIS_HOST:-127.0.0.1}
+      - REDIS_PORT=${REDIS_PORT:-6379}
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
+      - API_URL=${API_URL:-https://api.zotero.org/}
 
 volumes:
   minio_data:
-
-networks:
-  dataserver:
-    driver: bridge

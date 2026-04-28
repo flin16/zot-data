@@ -8,10 +8,10 @@ php /init-schema.php
 
 cd /var/www/html/misc
 
-MYSQL_HOST="${MYSQL_HOST:-host.docker.internal}"
-MYSQL_USER="${MYSQL_USER:-zotero}"
-MYSQL_PASS="${ZOTERO_MYSQL_PASS:-zotropass}"
-MYSQL_DB="${MYSQL_DATABASE:-zotero}"
+MYSQL_HOST="${MYSQL_HOST:-127.0.0.1}"
+MYSQL_USER="${DB_USER:-zotero}"
+MYSQL_PASS="${DB_PASS:-zotropass}"
+MYSQL_DB="${DB_NAME:-zotero}"
 
 # Helper: run mysql
 mysql_u() {
@@ -28,9 +28,8 @@ if ! mysql_u "$MYSQL_DB" -e "SELECT 1 FROM libraries LIMIT 1" >/dev/null 2>&1; t
 
     # Route all shards to the same DB (single-host mode)
     mysql_u "$MYSQL_DB" -e "
-        INSERT IGNORE INTO shardHosts VALUES (1, '$MYSQL_HOST', 3306, 'up');
-        -- Fix truncated hostname (host.docker.internal truncated to varchar(15))
-        UPDATE shardHosts SET address='$MYSQL_HOST' WHERE shardHostID=1;
+        INSERT IGNORE INTO shardHosts VALUES (1, '127.0.0.1', 3306, 'up');
+        UPDATE shardHosts SET address='127.0.0.1' WHERE shardHostID=1;
         INSERT IGNORE INTO shards VALUES (1, 1, '$MYSQL_DB', 'up', '1');
         INSERT IGNORE INTO shards VALUES (2, 1, '$MYSQL_DB', 'up', '1');
     "

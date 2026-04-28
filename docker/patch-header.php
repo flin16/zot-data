@@ -87,7 +87,7 @@ patchFile('include/header.inc.php', [
     [
         'Redis host override after config load',
         sprintf("// Read in configuration variables\nrequire('config/config.inc.php');\n\nif (Z_Core::isCommandLine())"),
-        sprintf("// Read in configuration variables\nrequire('config/config.inc.php');\n\n// Override Redis host to use host.docker.internal (Docker) or REDIS_HOST env var\n\$redisHost = getenv('REDIS_HOST') ?: 'host.docker.internal';\nZ_CONFIG::\$REDIS_HOSTS = [\n    'default' => ['host' => \$redisHost],\n    'request-limiter' => ['host' => \$redisHost],\n    'notifications' => ['host' => \$redisHost],\n    'fulltext-migration' => ['host' => \$redisHost, 'cluster' => true],\n];\n\nif (Z_Core::isCommandLine())"),
+        sprintf("// Read in configuration variables\nrequire('config/config.inc.php');\n\n// Override Redis host to use 127.0.0.1 (host network) or REDIS_HOST env var\n\$redisHost = getenv('REDIS_HOST') ?: '127.0.0.1';\nZ_CONFIG::\$REDIS_HOSTS = [\n    'default' => ['host' => \$redisHost],\n    'request-limiter' => ['host' => \$redisHost],\n    'notifications' => ['host' => \$redisHost],\n    'fulltext-migration' => ['host' => \$redisHost, 'cluster' => true],\n];\n\nif (Z_Core::isCommandLine())"),
     ],
 ]);
 
@@ -119,7 +119,7 @@ echo "Patching DB.inc.php (fix shard credentials)...\n";
 patchFile('include/DB.inc.php', [
     [
         'fix shard connection credentials',
-        sprintf("\$config = [\n\t\t\t'host'     => \$info['host'],\n\t\t\t'port'     => \$info['port'],\n\t\t\t'username' => \$info['user'],\n\t\t\t'password' => \$info['pass'],\n\t\t\t'dbname'   => \$info['db'],"),
+        sprintf("\$config = [\n\t\t\t'host'     => \$info['host'],\n\t\t\t'port'     => \$info['port'],\n\t\t\t// Docker: use env vars when DB doesn't store credentials\n\t\t\t'username' => !empty(\$info['user']) ? \$info['user'] : (getenv('DB_USER') ?: 'zotero'),\n\t\t\t'password' => !empty(\$info['pass']) ? \$info['pass'] : (getenv('DB_PASS') ?: 'zotropass'),\n\t\t\t'dbname'   => \$info['db'],"),
         sprintf("\$config = [\n\t\t\t'host'     => \$info['host'],\n\t\t\t'port'     => \$info['port'],\n\t\t\t// Docker: use env vars when DB doesn't store credentials\n\t\t\t'username' => !empty(\$info['user']) ? \$info['user'] : (getenv('MYSQL_USER') ?: 'zotero'),\n\t\t\t'password' => !empty(\$info['pass']) ? \$info['pass'] : (getenv('ZOTERO_MYSQL_PASS') ?: 'zotropass'),\n\t\t\t'dbname'   => \$info['db'],"),
     ],
 ]);

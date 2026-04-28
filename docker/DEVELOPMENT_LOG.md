@@ -61,6 +61,10 @@
 | 问题 | 修复 |
 |------|------|
 | `shardHosts.address` varchar(15) 截断 `host.docker.internal` | ALTER TABLE + 改 master.sql |
+| `shardLibraries` 表 INSERT 列顺序错误（`shardID, libraryID` vs `libraryID, libraryType, ...`） | 修正为正确的列名顺序 |
+| `zotero-schema` git submodule 在 Docker build 时报 "dubious ownership" | 改用直接 `git clone` 替代 submodule |
+| `Schema::updateDatabase()` 从未被调用，DB schema version=0，缺 `eventPlace` 等 19 个字段 | 新增 `init-schema.php`，在 `init.sh` 首次启动时调用 |
+| `eventPlace`、`conferenceName` 等字段服务器端不存在 | 调用 `Schema::updateDatabase()` 后解决 |
 | shard 连接无凭据（`host`/`port`/`user`/`pass` 全部 null） | DB.inc.php 从环境变量读取 |
 | `.user.ini` 被 mod_php 忽略 | 改用 `.htaccess` + `php_value` |
 | `require('../mvc/...')` 相对路径在 Apache 下失败 | 改用 `__DIR__` |
@@ -77,6 +81,63 @@
 - Password: `adminpass`
 - API Key: `REMOVED`
 
+## Python Sync Client
+
+`python/zotero_sync_client.py` — 读取本地 `~/Zotero/zotero.sqlite`，上传 items 到自建服务器 + 附件到 MinIO。
+
+### 同步流程修复记录
+
+#### math 组 libraryID 映射
+- 本地 SQLite `libraryID`（math=3）与服务器 group 的 `libraryID` 不一致
+- 修复：新增 `_resolve_server_library_id()` 调用 `GET /users/{id}/groups` 按 group name 匹配
+- `POST /groups/{server_group_id}/items` 用服务器端真实 ID，非本地 libraryID
+
+#### 手动插入 math 组
+math 组在服务器端不存在，手动插入：
+```sql
+INSERT INTO libraries (libraryID, libraryType, lastUpdated, version, storageUsage)
+    VALUES (3, 'group', NOW(), 0, 0);
+INSERT INTO `groups` (groupID, libraryID, name, ...) VALUES (2, 3, 'math', ...);
+INSERT INTO groupUsers (groupID, libraryID, status, ...) VALUES (2, 3, 'owner', ...);
+INSERT INTO shardLibraries (libraryID, libraryType, lastUpdated, version, storageUsage)
+    VALUES (3, 'group', NOW(), 0, 0);
+```
+
+#### POST 请求格式
+- `{"items": [...]}` 格式：API 接受嵌套格式，`post_items()` 自动包装
+
+#### 非 API 字段过滤
+本地 DB 中有些字段服务器不接受，统一在 `ItemConverter` 中过滤：
+- `repository`、`citationKey`、`archiveID` → `NON_API_FIELDS`
+- `preprint` item type 不被服务器接受 → 映射为 `document`（`ITEM_TYPE_MAP_EXTRA`）
+
+#### Item version
+新 item 的 `version` 必须为 0，不能用本地 version
+
+#### 响应解析（HTTP 200 ≠ 成功）
+Zotero API `POST /items` 返回 HTTP 200，但 `failed` 段可能包含被拒 item：
+- `successful` + `success` 段：真正成功的 key
+- `failed` 段中 `code == 412`：服务器已有（已同步），也加入成功列表
+- 只将真正成功的 item key 写入 `syncedItems`
+
+#### 附件同步（`_sync_attachments`）
+- `_sync_items` 过滤掉 `itemTypeID == attachment` 的 items
+- `LocalDB.get_items()` SQL 层面也过滤了 attachment
+- 附件走独立流程：
+  1. `POST /items` 创建附件 item（含 `linkMode` 字符串、`contentType`、`filename`、`md5`）
+  2. `linkMode` 格式：整数 → 字符串名（`0→imported_file`, `1→imported_url`, `2→linked_file`, `3→linked_url`）
+  3. 上传文件到 MinIO，key 为 MD5 哈希
+
+#### MinIO 凭证
+- `minio_secure: false` — Mac 通过 Caddy 走 HTTPS，但 MinIO 只支持 HTTP
+- 桶策略改为 `public`：`mc anonymous set public local/zotero`
+
+### 配置
+- `python/zotero_sync_config.json`
+  - `library_filter: "group"`：仅同步 group 库
+  - `sync_attachments: true`
+  - `minio_secure: false`
+
 ## 状态
 - ✅ Docker 容器启动正常
 - ✅ 数据库初始化完成（`libraries`、`users`、`keys`、`shards`、`shardHosts` 数据就绪）
@@ -86,4 +147,4 @@
 - ✅ `/users/current` 返回 `{"userID":1,"username":"admin","libraryID":1}`
 - ✅ `/users/1/items` 返回 `[]`（空用户库）
 - ✅ 全流程端到端测试通过（Caddy → Docker → DB）
-- ⏳ Mac 客户端实际同步待验证（用户需在客户端配置 `https://zot.0und.com` 为同步服务器）
+- ✅ Python Sync Client 端到端同步成功（math 组 14 items + 2 attachments 入库 MinIO）
