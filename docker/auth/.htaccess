@@ -1,0 +1,2 @@
+# Auth pages - bypass Zotero API authentication
+php_value auto_prepend_file /var/www/html/htdocs/auth/prepend.php

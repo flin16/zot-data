@@ -5,9 +5,10 @@ FROM php:8.2-apache
 RUN apt-get update && apt-get install -y \
     libzip-dev libcurl4-openssl-dev libssl-dev zip unzip git curl \
     libicu-dev libonig-dev wget gnupg default-mysql-client \
-    && wget -q https://dl.min.io/client/mc/release/linux-amd64/mc -O /usr/local/bin/mc \
-    && chmod +x /usr/local/bin/mc \
     && rm -rf /var/lib/apt/lists/*
+
+RUN wget -q https://dl.min.io/client/mc/release/linux-amd64/mc -O /usr/local/bin/mc \
+    && chmod +x /usr/local/bin/mc
 
 # PHP extensions
 RUN docker-php-ext-install \
@@ -46,6 +47,9 @@ RUN echo "include_path='.:/usr/local/lib/php:/var/www/html/include'" \
 COPY config.inc.php include/config/config.inc.php
 COPY dbconnect.inc.php include/config/dbconnect.inc.php
 
+# ── Auth pages (login/register) ──────────────────────────────────────────────
+COPY auth/ htdocs/auth/
+
 # ── Apply Docker environment patches ──────────────────────────────────────────
 COPY patch-header.php /tmp/
 RUN php /tmp/patch-header.php
@@ -61,6 +65,7 @@ RUN a2enmod rewrite headers \
     && sed -i 's/Listen 80/Listen 8080/' /etc/apache2/ports.conf \
     && sed -i 's|<VirtualHost \*:[0-9]*>|<VirtualHost *:8080>|' /etc/apache2/sites-available/000-default.conf \
     && sed -i '0,/DocumentRoot/s|DocumentRoot /var/www/html|DocumentRoot /var/www/html/htdocs|' /etc/apache2/sites-available/000-default.conf \
+    && sed -i '/^RewriteEngine On/ a RewriteRule ^auth/login$ auth/login.php [L]' /var/www/html/htdocs/.htaccess \
     && echo "ServerName localhost" >> /etc/apache2/apache2.conf
 COPY php.ini /usr/local/etc/php/conf.d/docker-php-custom.ini
 
