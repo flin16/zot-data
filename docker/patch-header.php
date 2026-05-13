@@ -138,7 +138,7 @@ patchFile('model/auth/Password.inc.php', [
     [
         'fix www database name',
         sprintf("// TODO: config\n\t\t\$dev = Z_ENV_TESTING_SITE ? \"_dev\" : \"\";\n\t\t\$databaseName = \"zotero_www{\$dev}\";"),
-        sprintf("// TODO: config\n\t\t\$dev = Z_ENV_TESTING_SITE ? \"_dev\" : \"\";\n\t\t// Docker: use www DB (mapped via www1/www2 in dbconnect.inc.php)\n\t\t\$databaseName = Z_ENV_TESTING_SITE ? \"www\" : \"zotero_www\";"),
+        sprintf("// Docker: www database name is \"www\" (mapped via www1/www2 in dbconnect.inc.php)\n\t\t\$databaseName = \"www\";"),
     ],
 ]);
 

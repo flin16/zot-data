@@ -13,6 +13,7 @@ services:
       - DB_NAME=${DB_NAME:-zotero}
       - ADMIN_USERNAME=${ADMIN_USERNAME:-admin}
       - ADMIN_PASSWORD=${ADMIN_PASSWORD:-adminpass}
+      - AUTH_SALT=${AUTH_SALT:-dev-salt-change-in-production}
       - S3_ENDPOINT=127.0.0.1:${MINIO_PORT:-9000}
       - S3_PUBLIC_ENDPOINT=${S3_PUBLIC_ENDPOINT:-http://localhost:${MINIO_PORT:-9000}}
       - AWS_ACCESS_KEY_ID=${MINIO_ROOT_USER:-minioadmin}
