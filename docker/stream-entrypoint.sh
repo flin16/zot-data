@@ -11,7 +11,7 @@ fi
 
 cat > /usr/src/app/config/local.json << EOF
 {
-  "httpPort": 8080,
+  "httpPort": ${STREAM_PORT:-8081},
   "redis": {
     "url": "redis://${REDIS_URL}"
   },

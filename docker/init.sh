@@ -59,6 +59,9 @@ if ! mysql_u "$MYSQL_DB" -e "SELECT 1 FROM libraries LIMIT 1" >/dev/null 2>&1; t
     echo "[init] Loading schema into www..."
     mysql_u www -e "SOURCE www.sql;" 2>/dev/null || true
 
+    # Fix www.users password column (bcrypt hash can be 60 chars)
+    mysql_u "$MYSQL_DB" -e "ALTER TABLE www.users MODIFY COLUMN password varchar(255) NOT NULL;" 2>/dev/null || true
+
     echo "[init] Admin: $ADMIN_USER / $ADMIN_PASS"
 else
     echo "[init] Database already initialized, skipping."

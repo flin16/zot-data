@@ -68,9 +68,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $sessionToken) {
             $mysqli->begin_transaction();
             try {
                 $stmt = $mysqli->prepare(
-                    "UPDATE loginSessions SET userID=?, status='completed', dateCompleted=?, dateExpires=? WHERE sessionToken=?"
+                    "UPDATE loginSessions SET userID=?, keyID=?, status='completed', dateCompleted=?, dateExpires=? WHERE sessionToken=?"
                 );
-                $stmt->bind_param('isss', $userID, $now, $expires, $sessionToken);
+                $stmt->bind_param('iisss', $userID, $keyID, $now, $expires, $sessionToken);
                 $stmt->execute();
                 $stmt->close();
 
