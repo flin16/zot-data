@@ -62,6 +62,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $sessionToken) {
                 $keyID = $keyRow['keyID'];
             }
 
+            // Ensure key has library + write permissions
+            $libStmt = $mysqli->prepare("SELECT libraryID FROM users WHERE userID=?");
+            $libStmt->bind_param('i', $userID);
+            $libStmt->execute();
+            $libRow = $libStmt->get_result()->fetch_assoc();
+            $libStmt->close();
+            $libID = $libRow ? (int)$libRow['libraryID'] : $userID;
+            $mysqli->query(
+                "INSERT IGNORE INTO keyPermissions (keyID, libraryID, permission, granted) VALUES "
+                . "($keyID, $libID, 'library', 1), "
+                . "($keyID, $libID, 'write', 1)"
+            );
+
             // Complete session (use UTC timestamps to match PHP timezone)
             $now = gmdate('Y-m-d H:i:s');
             $expires = gmdate('Y-m-d H:i:s', time() + 86400);

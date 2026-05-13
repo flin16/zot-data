@@ -10,7 +10,7 @@ class Z_CONFIG {
     public static $API_ENABLED = true;
     public static $READ_ONLY = false;
     public static $BACKOFF = 0;
-    public static $TESTING_SITE = true;
+    public static $TESTING_SITE = false;
     public static $DEV_SITE = false;
     public static $DEBUG_LOG = false;
 
