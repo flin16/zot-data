@@ -1,7 +1,7 @@
-# === 需要复制到 /etc/caddy/conf.d/0und.caddy ===
+# === 需要复制到 /etc/caddy/conf.d/your.caddy ===
 # 复制后运行: sudo systemctl reload caddy
 
-(0und_common) {
+(your_common) {
     encode gzip
     header {
         Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
@@ -11,16 +11,16 @@
     }
 }
 
-0und.com {
-    import 0und_common
+yourserver.com {
+    import your_common
     reverse_proxy 127.0.0.1:8082
 }
 
-mail.0und.com {
+mail.yourserver.com {
     abort
 }
 
-*.0und.com {
+*.yourserver.com {
     tls {
         dns cloudflare {$CLOUDFLARE_API_TOKEN}
     }

@@ -7,10 +7,10 @@
     "homepage_url": "https://github.com/zeround/zot-data",
     "applications": {
         "zotero": {
-            "id": "zot-data-sync@0und.com",
+            "id": "zot-data-sync@yourserver.com",
             "strict_min_version": "8.0",
             "strict_max_version": "9.9.9",
-            "update_url": "https://zot.0und.com/updates.json"
+            "update_url": "https://yourserver.com/updates.json"
         }
     }
 }

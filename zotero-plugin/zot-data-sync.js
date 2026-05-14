@@ -19,7 +19,7 @@ ZotDataSync = {
     },
 
     get serverURL() {
-        return this.getPref("extensions.zot-data-sync.server_url", "https://zot.0und.com").replace(/\/$/, "");
+        return this.getPref("extensions.zot-data-sync.server_url", "https://yourserver.com").replace(/\/$/, "");
     },
     get username() {
         return this.getPref("extensions.zot-data-sync.username", "admin");

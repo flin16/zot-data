@@ -19,7 +19,7 @@ ZotDataSync = {
     },
 
     get serverURL() {
-        return this.getPref("extensions.zot-data-sync.server_url", "https://zot.0und.com").replace(/\/$/, "");
+        return this.getPref("extensions.zot-data-sync.server_url", "https://yourserver.com").replace(/\/$/, "");
     },
     get username() {
         return this.getPref("extensions.zot-data-sync.username", "admin");
@@ -37,7 +37,7 @@ ZotDataSync = {
         return this.getPref("extensions.zot-data-sync.library_filter", "group");
     },
     get minioEndpoint() {
-        return this.getPref("extensions.zot-data-sync.minio_endpoint", "s3.0und.com");
+        return this.getPref("extensions.zot-data-sync.minio_endpoint", "s3.yourserver.com");
     },
     get minioAccessKey() {
         return this.getPref("extensions.zot-data-sync.minio_access_key", "minioadmin");

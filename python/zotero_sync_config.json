@@ -1,11 +1,11 @@
 {
-    "api_url": "https://zot.0und.com",
+    "api_url": "https://yourserver.com",
     "username": "admin",
     "password": "adminpass",
     "user_id": 1,
     "library_id": 1,
     "local_db": "~/Zotero/zotero.sqlite",
-    "minio_endpoint": "s3.0und.com",
+    "minio_endpoint": "s3.yourserver.com",
     "minio_access_key": "minioadmin",
     "minio_secret_key": "minioadmin",
     "minio_bucket": "zotero",

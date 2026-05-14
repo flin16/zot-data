@@ -57,13 +57,13 @@ def _default_local_db() -> str:
 
 
 DEFAULT_CONFIG = {
-    "api_url": "https://zot.0und.com",
+    "api_url": "https://yourserver.com",
     "username": "admin",
     "password": os.getenv("ZOTERO_PASSWORD", "adminpass"),
     "user_id": 1,
     "library_id": 1,
     "local_db": _default_local_db(),
-    "minio_endpoint": "s3.0und.com",
+    "minio_endpoint": "s3.yourserver.com",
     "minio_access_key": "minioadmin",
     "minio_secret_key": "minioadmin",
     "minio_bucket": "zotero",

@@ -45,18 +45,18 @@ Default `--library-filter` is `group` (only syncs group libraries). Override wit
 
 ```
 Zotero Client (Mac)
-  → https://zot.0und.com  (Caddy → Docker :23231)
+  → https://yourserver.com  (Caddy → Docker :23231)
        ├── PHP/Apache (zotero/dataserver, port 80)
        │      ├── MariaDB  (host.docker.internal:3306)  ← DB: zotero, www, ids
        │      ├── Redis    (host.docker.internal:6379)
        │      └── MinIO    (Docker internal :9000)
-       └── MinIO S3 API   (s3.0und.com → Docker :9000)
+       └── MinIO S3 API   (s3.yourserver.com → Docker :9000)
 
 Local Mac Zotero
   → python/zotero_sync_client.py
        ├── reads ~/Zotero/zotero.sqlite
-       ├── posts items → https://zot.0und.com
-       └── uploads attachments → s3.0und.com (MinIO)
+       ├── posts items → https://yourserver.com
+       └── uploads attachments → s3.yourserver.com (MinIO)
 ```
 
 Session-based login: Zotero client `POST /keys/sessions` → gets `loginURL` → user visits URL → submits password → `UPDATE loginSessions SET status='completed'` → client completes sync.

@@ -1,7 +1,7 @@
 # Zotero Data Server 开发日志
 
 ## 目标
-在 Linux 服务器上用 Docker 搭建 Zotero Data Server，让远程 Mac 上的 Zotero 客户端通过 `http://zot.0und.com` 同步数据。
+在 Linux 服务器上用 Docker 搭建 Zotero Data Server，让远程 Mac 上的 Zotero 客户端通过 `http://yourserver.com` 同步数据。
 
 ## 架构
 - **服务器**: Linux 6.18，IP `10.0.0.210`，Caddy 反向代理 + Cloudflare DNS + TLS
@@ -9,7 +9,7 @@
 - **数据库**: 宿主机 MariaDB（`host.docker.internal:3306`）
 - **缓存**: 宿主机 Redis（`host.docker.internal:6379`）
 - **S3 存储**: MinIO Docker（`minio:9000`）
-- **外部访问**: `https://zot.0und.com` → Caddy → `localhost:8080`（Docker）
+- **外部访问**: `https://yourserver.com` → Caddy → `localhost:8080`（Docker）
 
 ## 数据库
 - `zotero` 主库 + `ids` + `www`
@@ -53,7 +53,7 @@
 
 ### 5. 会话流程（session-based login）
 1. Zotero 客户端 `POST /keys/sessions`（username/password）→ 返回 `sessionToken` + `loginURL`
-2. 客户端打开 `loginURL`（用户浏览器访问 `http://zot.0und.com/auth/login?session=TOKEN`）
+2. 客户端打开 `loginURL`（用户浏览器访问 `http://yourserver.com/auth/login?session=TOKEN`）
 3. 用户填密码提交 → `POST /auth/login` → `UPDATE loginSessions SET status='completed'`
 4. 客户端随后用该 sessionToken 完成后续同步
 

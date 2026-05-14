@@ -141,7 +141,7 @@ let password  = Zotero.Prefs.get('extensions.zot-data-sync.password', true);
 ## prefs.js 默认值
 
 ```js
-pref("extensions.zot-data-sync.server_url", "https://zot.0und.com");
+pref("extensions.zot-data-sync.server_url", "https://yourserver.com");
 pref("extensions.zot-data-sync.username", "admin");
 pref("extensions.zot-data-sync.password", "");
 pref("extensions.zot-data-sync.sync_attachments", true);
