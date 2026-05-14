@@ -93,13 +93,37 @@ stream.example.com {
 
 ### 4. Configure Zotero client
 
-In Zotero desktop preferences → Sync:
-- Uncheck "Use Zotero's servers"
-- Server: `https://zot.example.com/`
-- Username: `admin`
-- Password: `adminpass` (or your configured password)
+Zotero desktop stores configuration in `prefs.js`. The file location depends on your OS:
 
-Or use an API key by logging in at `https://zot.example.com/auth/login`.
+| OS | Path |
+|----|------|
+| **macOS** | `~/Library/Zotero/profiles/xxxxxx.default/prefs.js` |
+| **Windows** | `%APPDATA%\Zotero\Zotero\Profiles\xxxxxx.default\prefs.js` |
+| **Linux** | `~/.zotero/zotero/xxxxxx.default/prefs.js` |
+
+Add these lines, then (re)start Zotero:
+
+```js
+user_pref("extensions.zotero.api.url", "https://zot.example.com/");
+user_pref("extensions.zotero.streaming.url", "wss://stream.example.com/");
+```
+
+To disable WebSocket streaming (falls back to polling — no functional difference):
+
+```js
+user_pref("extensions.zotero.streaming.enabled", false);
+```
+
+**Zotero sync UI method** (alternative to editing prefs.js):
+
+1. Open Zotero → Edit → Settings → Sync
+2. Uncheck **Use Zotero's servers**
+3. Enter your server URL: `https://zot.example.com/`
+4. Enter your username and password
+5. Click **Login** — your browser will open the OAuth page at your server
+6. After logging in, an API key is automatically created and stored
+
+> ⚠ The sync UI method may not work reliably on all Zotero versions. If the login fails, use the `prefs.js` method instead and obtain an API key via `https://zot.example.com/auth/login`.
 
 ## Python Sync Client
 
