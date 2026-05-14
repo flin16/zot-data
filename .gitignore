@@ -2,3 +2,4 @@ python/~/
 python/__pycache__/
 *.pyc
 docker/.env
+.env
