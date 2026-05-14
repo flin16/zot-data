@@ -54,6 +54,9 @@ COPY auth/ htdocs/auth/
 COPY patch-header.php /tmp/
 RUN php /tmp/patch-header.php
 
+# ── Patch: ensure annotation sortIndex is never null ─────────────────────────
+COPY Item.inc.php /var/www/html/model/Item.inc.php
+
 # ── Composer deps ─────────────────────────────────────────────────────────────
 RUN cd /var/www/html && composer install --no-dev --prefer-dist --no-scripts --ignore-platform-reqs
 

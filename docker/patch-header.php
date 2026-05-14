@@ -142,6 +142,15 @@ patchFile('model/auth/Password.inc.php', [
     ],
 ]);
 
+echo "Patching Item.inc.php (annotation sortIndex default)...\n";
+patchFile('model/Item.inc.php', [
+    [
+        'ensure sortIndex is never null',
+        sprintf("\t\t\t\t\$fullProp = 'annotation' . ucwords(\$prop);\n\t\t\t\t\$arr[\$fullProp] = \$this->\$fullProp;\n\t\t\t}\n\t\t}\n\n\t\t// Non-field properties,"),
+        sprintf("\t\t\t\t\$fullProp = 'annotation' . ucwords(\$prop);\n\t\t\t\t// Ensure sortIndex is never null (clients expect non-null value)\n\t\t\t\tif (\$prop == 'sortIndex' && (\$this->\$fullProp === null || \$this->\$fullProp === '')) {\n\t\t\t\t\t\$arr[\$fullProp] = '00000|000000|00000';\n\t\t\t\t} else {\n\t\t\t\t\t\$arr[\$fullProp] = \$this->\$fullProp;\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\n\t\t// Non-field properties,"),
+    ],
+]);
+
 echo "Patching ApiController.php (add currentUser action)...\n";
 patchFile('controllers/ApiController.php', [
     [
