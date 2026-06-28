@@ -62,6 +62,11 @@ if ! mysql_u "$MYSQL_DB" -e "SELECT 1 FROM libraries LIMIT 1" >/dev/null 2>&1; t
     # Fix www.users password column (bcrypt hash can be 60 chars)
     mysql_u "$MYSQL_DB" -e "ALTER TABLE www.users MODIFY COLUMN password varchar(255) NOT NULL;" 2>/dev/null || true
 
+    # Create www admin user (needed for OAuth login to work)
+    AUTH_SALT="${AUTH_SALT:-dev-salt-change-in-production}"
+    ADMIN_HASH=$(echo -n "${AUTH_SALT}${ADMIN_PASS}" | sha1sum | cut -d' ' -f1)
+    mysql_u www -e "INSERT IGNORE INTO users (userID, username, password, role) VALUES (1, '$ADMIN_USER', '$ADMIN_HASH', 'normal');" 2>/dev/null || true
+
     echo "[init] Admin: $ADMIN_USER / $ADMIN_PASS"
 else
     echo "[init] Database already initialized, skipping."

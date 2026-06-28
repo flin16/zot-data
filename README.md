@@ -39,9 +39,19 @@ A fully self-contained [Zotero Data Server](https://github.com/zotero/dataserver
 - **Reverse proxy** — Caddy, nginx, or similar for TLS termination and routing
 - **MinIO client** (`mc`) — used by init script for bucket creation
 
+## Prerequisites
+
+You need these running on your **host machine** (not in Docker):
+
+- **MySQL / MariaDB** — create the databases beforehand (the init script populates them)
+- **Redis** — optional, only if you want the stream server
+- **Reverse proxy** — Caddy, nginx, or similar, to provide TLS and route subdomains
+
+> Docker containers use `network_mode: host`, so they connect to MySQL and Redis at `127.0.0.1` on the host.
+
 ## Quick Start
 
-### 1. Database setup
+### Step 1: Create the MySQL databases
 
 ```sql
 CREATE DATABASE zotero;
@@ -53,31 +63,52 @@ GRANT ALL ON ids.* TO 'zotero'@'127.0.0.1';
 GRANT ALL ON www.* TO 'zotero'@'127.0.0.1';
 ```
 
-Add the admin user (password: `adminpass`):
-
-```sql
-INSERT INTO www.users (userID, username, password, role)
-VALUES (1, 'admin', SHA1(CONCAT('dev-salt-change-in-production', 'adminpass')), 'normal');
-```
-
-### 2. Start services
+### Step 2: Copy and edit config
 
 ```bash
 cd docker
 cp .env.example .env
-# Edit .env if needed
+# Edit .env — at minimum set your database password and domain
+```
 
+### Step 3: Build and start Docker services
+
+```bash
 docker compose up -d
 ```
 
-The init script will:
-- Load the Zotero schema into MySQL
-- Create default admin user + group
-- Create MinIO buckets (`zotero`, `zotero-fulltext`)
+This builds the app image (clones dataserver from GitHub, applies patches, installs deps) and starts three services:
 
-### 3. Configure reverse proxy
+| Container | What it does |
+|-----------|-------------|
+| `app` | Zotero API server on port **8080** |
+| `minio` | S3 file storage on port **9000** |
+| `stream` | WebSocket server on port **8082** (optional) |
 
-Example Caddy config (`docker/example.caddy`):
+On first start, the init script inside the `app` container will:
+1. Load the Zotero schema into MySQL (creates all tables in `zotero`, `ids`, `www`)
+2. Create the default admin user in `www.users` so the OAuth login page works
+3. Create MinIO buckets (`zotero`, `zotero-fulltext`)
+
+No manual SQL needed — the admin user is created automatically with the username and password from your `.env` file.
+
+### Step 4: Verify the API is running
+
+```bash
+curl http://localhost:8080/
+# → "Nothing to see here."   (means it works)
+
+# Get an API key via the login page:
+# Open http://localhost:8080/auth/login in your browser,
+# or use the test endpoint:
+curl -X POST http://localhost:8080/keys/sessions \
+    -d "username=admin&password=adminpass"
+# → Returns a session token — complete the login via the returned loginURL
+```
+
+### Step 5: Configure your reverse proxy (Caddy / nginx)
+
+The `docker/example.caddy` file is a reference, not something Docker uses. Add this to your real Caddyfile:
 
 ```
 zot.example.com {
@@ -91,7 +122,9 @@ stream.example.com {
 }
 ```
 
-### 4. Configure Zotero client
+Then reload Caddy: `sudo systemctl reload caddy`
+
+### Step 6: Configure Zotero client
 
 Zotero desktop stores configuration in `prefs.js`. The file location depends on your OS:
 
