@@ -155,16 +155,43 @@ sudo systemctl start docker 2>/dev/null || true
 sudo systemctl start containerd 2>/dev/null || true
 
 # ── 5. Build & start ────────────────────────────────────────────────────────
-say "5/5 Build and start..."
+
+if $USE_HOST_DB; then
+    say "5/5 Build and start (host MariaDB)..."
+    echo ""
+    echo "  Pre-flight checklist for host MariaDB:"
+    echo "  ---------------------------------------"
+    echo "  1. Create zotero user (if not done):"
+    echo "     mysql -e \"CREATE USER 'zotero'@'%' IDENTIFIED BY 'zotropass';\""
+    echo "     mysql -e \"GRANT ALL ON zotero.* TO 'zotero'@'%';\""
+    echo "     mysql -e \"GRANT ALL ON ids.*    TO 'zotero'@'%';\""
+    echo "     mysql -e \"GRANT ALL ON www.*    TO 'zotero'@'%';\""
+    echo "  2. Remove STRICT_TRANS_TABLES from sql_mode:"
+    echo "     mysql -e \"SELECT @@sql_mode;\" | grep -q STRICT && echo NEEDS FIX"
+    echo "     Edit /etc/mysql/mariadb.conf.d/ (or /etc/my.cnf.d/) and restart"
+    echo "  ---------------------------------------"
+    echo ""
+
+    # Verify connection to host DB before starting
+    if command -v mysql >/dev/null 2>&1; then
+        if mysql -h"${DB_HOST:-127.0.0.1}" -P"${DB_PORT:-3306}" \
+               -u"${DB_USER:-zotero}" -p"${DB_PASS:-zotropass}" --skip-ssl \
+               -e "SELECT 1" >/dev/null 2>&1; then
+            say "  Host DB connection OK"
+        else
+            warn "  Cannot connect to host DB as ${DB_USER:-zotero} — did you run the checklist above?"
+            warn "  The app container will keep retrying. Fix the DB and it'll auto-connect."
+        fi
+    fi
+    say "  Starting containers..."
+else
+    say "5/5 Build and start (Docker MariaDB)..."
+fi
 
 COMPOSE_CMD="docker compose"
 COMPOSE_PROFILE=""
-
-if $USE_HOST_DB; then
-    say "  Starting with host MariaDB..."
-else
+if ! $USE_HOST_DB; then
     COMPOSE_PROFILE="--profile docker-db"
-    say "  Starting with Docker MariaDB..."
 fi
 
 # Try without sudo first (docker group), fall back to sudo
@@ -197,35 +224,29 @@ done
 
 # ── Done ─────────────────────────────────────────────────────────────────────
 DB_MODE="$($USE_HOST_DB && echo 'host MariaDB' || echo 'Docker MariaDB')"
+LAN_IP=$(ip -4 addr show scope global 2>/dev/null | grep -oP 'inet \K[\d.]+' | grep -v '127\.' | head -1)
+APIPORT="${ZOTERO_API_PORT:-23231}"
 echo ""
 echo "======================================================"
 echo "  zot-data started"
 echo "======================================================"
 echo "  DB:       $DB_MODE (port ${DB_PORT:-3306})"
-echo "  API:      http://localhost:${ZOTERO_API_PORT:-23231}/"
+echo "  API:      http://localhost:$APIPORT/"
+if [ -n "$LAN_IP" ]; then
+    echo "            http://$LAN_IP:$APIPORT/"
+fi
 echo "  MinIO:    http://localhost:${MINIO_PORT:-9000}/"
-echo "  Console:  http://localhost:${MINIO_CONSOLE_PORT:-9001}/"
 echo "  Stream:   http://localhost:${STREAM_PORT:-8082}/"
 echo ""
-echo "  Register: http://localhost:${ZOTERO_API_PORT:-23231}/auth/register.php"
-echo "  Login:    http://localhost:${ZOTERO_API_PORT:-23231}/auth/login.php"
-echo "  Groups:   http://localhost:${ZOTERO_API_PORT:-23231}/auth/groups.php"
+echo "  Register: http://localhost:$APIPORT/auth/register.php"
+echo "  Login:    http://localhost:$APIPORT/auth/login.php"
+echo "  Groups:   http://localhost:$APIPORT/auth/groups.php"
 echo ""
 echo "  Default admin: admin / adminpass"
 echo "======================================================"
 
-APIPORT="${ZOTERO_API_PORT:-23231}"
 echo ""
-say "Next: open http://localhost:$APIPORT/auth/register.php to create your account"
-if $USE_HOST_DB; then
-    warn ""
-    warn "Host MariaDB checklist:"
-    warn "  1. Create the zotero user with grants (if not done already):"
-    warn "     CREATE USER 'zotero'@'%' IDENTIFIED BY 'zotropass';"
-    warn "     GRANT ALL ON zotero.* TO 'zotero'@'%';"
-    warn "     GRANT ALL ON ids.*    TO 'zotero'@'%';"
-    warn "     GRANT ALL ON www.*    TO 'zotero'@'%';"
-    warn "  2. Remove STRICT_TRANS_TABLES from sql_mode:"
-    warn "     Check: mysql -e 'SELECT @@sql_mode;' | grep STRICT"
-    warn "     Edit  /etc/mysql/mariadb.conf.d/ (or /etc/my.cnf.d/) and restart"
+say "Next: http://localhost:$APIPORT/auth/register.php"
+if [ -n "$LAN_IP" ]; then
+    say "  or  http://$LAN_IP:$APIPORT/auth/register.php"
 fi
