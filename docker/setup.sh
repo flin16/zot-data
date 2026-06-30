@@ -62,17 +62,28 @@ say "2/5 Checking port $DB_PORT..."
 if ss -tlnp | grep -q ":$DB_PORT "; then
     PROC_INFO=$(sudo ss -tlnp | grep ":$DB_PORT " | head -1)
     if $USE_HOST_DB; then
-        say "  Host MariaDB detected on port $DB_PORT — using it"
+        say "  Host database detected on port $DB_PORT — using it"
     else
         warn "Port $DB_PORT is occupied: $PROC_INFO"
         warn ""
-        warn "Options:"
-        warn "  a) Use the existing database:  ./setup.sh --host-db"
-        warn "     (make sure zotero user exists — see --host-db notes below)"
-        warn "  b) Stop the host DB and use Docker MariaDB:"
-        warn "       sudo systemctl stop mariadb   # Arch / Debian"
-        warn "       sudo systemctl stop mysql     # Debian / Ubuntu"
-        die "Choose an option above"
+        echo "  A database is already running on port $DB_PORT."
+        echo "  [1] Use it (switch to host-db mode)"
+        echo "  [2] Stop it and start a Docker MariaDB instead"
+        echo "  [3] Abort"
+        echo ""
+        read -p "  Choose [1-3]: " CHOICE
+        case "$CHOICE" in
+            1) USE_HOST_DB=true
+               say "Switching to host-db mode" ;;
+            2) say "Stopping host database..."
+               sudo systemctl stop mariadb 2>/dev/null || true
+               sudo systemctl stop mysql 2>/dev/null || true
+               if ss -tlnp | grep -q ":$DB_PORT "; then
+                   die "Could not free port $DB_PORT. Stop the database manually."
+               fi
+               say "  Port $DB_PORT freed" ;;
+            *) die "Aborted" ;;
+        esac
     fi
 else
     if $USE_HOST_DB; then
