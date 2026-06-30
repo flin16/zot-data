@@ -136,26 +136,36 @@ Group types: `Private`, `PublicClosed`, `PublicOpen`.
 
 ## Migrating from an Existing Zotero Library
 
-> **Important:** Back up your old SQLite BEFORE logging into the new server in your Zotero client. Once you log in, the client syncs and overwrites the local database with the empty server data — your old items are gone.
+> **Important:** Back up your old SQLite BEFORE logging into the new server in your Zotero client. Once you log in, the client syncs and overwrites the local database — your old items are gone.
 
 If you have an existing Zotero library with lots of items, migrate them before connecting your client to the new server:
 
-1. **Copy your old database** (before logging into the new server):
+1. **Back up the old database** (before logging into the new server):
    ```bash
    cp ~/Zotero/zotero.sqlite ~/Zotero/zotero-backup.sqlite
    ```
 
-2. **Configure and run the migration script**, pointing `local_db` at the backup:
+2. **Run the migration script**. It reads the backup, converts each item to API format, POSTs them to the server, and uploads attachment files to MinIO:
    ```bash
    cd python
    cp zotero_sync_config.json config.json
-   # Edit config.json — set local_db to the backup path, and your server URL/credentials
+   # Edit config.json — set local_db, server URL, and credentials
    uv run --with requests --with minio python3 zotero_sync_client.py --config config.json
    ```
 
-3. **Now log into the new server** from your Zotero client. Your items are already there.
+3. **Now log into the new server** from your Zotero client — your items are already there.
 
-This script is a **one-time migration tool**, not for daily use.
+This script is a **one-time migration tool**, not for daily sync.
+
+### How it works
+
+| Step | What |
+|------|------|
+| Read | Opens the old SQLite, extracts all items, collections, notes, tags |
+| Convert | `ItemConverter` transforms local-format metadata to dataserver API format |
+| Upload | POSTs each item to `/users/{id}/items` (with retries) |
+| Attachments | Computes MD5 hash of each attached file, uploads to MinIO bucket by hash key |
+| Groups | Matches group names against server groups, syncs into the correct library |
 
 ### Config
 

@@ -1,8 +1,8 @@
 #!/bin/bash
-# setup.sh — 一键初始化 zot-data 环境并启动服务
-# 用法:
-#   ./setup.sh          — 默认启动 Docker MariaDB
-#   ./setup.sh --host-db — 改用宿主机 MariaDB（需先启动 host mariadb）
+# setup.sh — bootstrap zot-data from scratch
+# Usage:
+#   ./setup.sh            start with Docker MariaDB (default)
+#   ./setup.sh --host-db  use existing host MariaDB
 
 set -e
 cd "$(dirname "$0")"
@@ -17,91 +17,112 @@ USE_HOST_DB=false
 while [ $# -gt 0 ]; do
     case "$1" in
         --host-db) USE_HOST_DB=true; shift ;;
-        *) die "未知参数: $1 (可用: --host-db)" ;;
+        *) die "Unknown flag: $1 (try --host-db)" ;;
     esac
 done
 
 # ── Load config ─────────────────────────────────────────────────────────────
 if [ ! -f .env ]; then
     cp .env.example .env
-    say "已生成 .env 文件，使用默认配置"
+    say "Generated .env with defaults"
 fi
 set -a; source .env; set +a
 
 DB_PORT="${DB_PORT:-3306}"
 PROXY="${HTTP_PROXY:-}"
 
-say "模式: $($USE_HOST_DB && echo '宿主机 MariaDB' || echo 'Docker MariaDB')"
+say "Mode: $($USE_HOST_DB && echo 'host MariaDB' || echo 'Docker MariaDB')"
 
-# ── 1. Check system packages ────────────────────────────────────────────────
-say "1/5 检查系统依赖..."
+# ── 1. System deps (check only, don't install) ──────────────────────────────
+say "1/5 Checking system dependencies..."
 
 missing=""
-for pkg in docker docker-compose; do
-    pacman -Q "$pkg" >/dev/null 2>&1 || missing="$missing $pkg"
+for cmd in docker; do
+    command -v "$cmd" >/dev/null 2>&1 || missing="$missing $cmd"
 done
+# docker-compose can be v1 binary or v2 plugin
+docker compose version >/dev/null 2>&1 || missing="$missing docker-compose"
+
 if [ -n "$missing" ]; then
-    say "安装缺失的包:$missing"
-    sudo pacman -S --noconfirm $missing || die "包安装失败"
+    warn "Missing:$missing"
+    warn ""
+    warn "Install instructions:"
+    warn "  Arch:    sudo pacman -S docker docker-compose"
+    warn "  Debian:  sudo apt install docker.io docker-compose-v2"
+    warn "  Ubuntu:  sudo snap install docker"
+    warn "  RHEL:    sudo dnf install docker docker-compose"
+    warn ""
+    warn "Then: sudo systemctl start docker"
+    die "Install the packages above and re-run"
 fi
 
-# ── 2. Port conflict check (only in Docker DB mode) ─────────────────────────
-say "2/5 检查端口冲突..."
+# ── 2. Port check ───────────────────────────────────────────────────────────
+say "2/5 Checking port $DB_PORT..."
 
-if $USE_HOST_DB; then
-    # Host DB mode: ensure MariaDB is reachable
-    if ! ss -tlnp | grep -q ":$DB_PORT "; then
-        warn "端口 $DB_PORT 上未检测到 MariaDB（宿主机模式）"
-        warn "请确保宿主机 MariaDB 已启动:"
-        warn "  sudo systemctl start mariadb"
-        die "MariaDB 未运行"
-    fi
-    say "  检测到宿主机 MariaDB (端口 $DB_PORT)"
-else
-    # Docker DB mode: port must be free
-    if ss -tlnp | grep -q ":$DB_PORT "; then
-        PROC=$(sudo ss -tlnp | grep ":$DB_PORT " | head -1)
-        warn "端口 $DB_PORT 已被占用: $PROC"
-        warn "宿主机 MariaDB 正在运行。如需使用宿主机模式:"
-        warn "  ./setup.sh --host-db"
+if ss -tlnp | grep -q ":$DB_PORT "; then
+    PROC_INFO=$(sudo ss -tlnp | grep ":$DB_PORT " | head -1)
+    if $USE_HOST_DB; then
+        say "  Host MariaDB detected on port $DB_PORT — using it"
+    else
+        warn "Port $DB_PORT is occupied: $PROC_INFO"
         warn ""
-        warn "如需释放端口给 Docker MariaDB:"
-        warn "  sudo systemctl stop mariadb"
-        warn "  sudo systemctl disable mariadb"
-        die "请先处理端口冲突"
+        warn "Options:"
+        warn "  a) Use the existing database:  ./setup.sh --host-db"
+        warn "     (make sure zotero user exists — see --host-db notes below)"
+        warn "  b) Stop the host DB and use Docker MariaDB:"
+        warn "       sudo systemctl stop mariadb   # Arch / Debian"
+        warn "       sudo systemctl stop mysql     # Debian / Ubuntu"
+        die "Choose an option above"
     fi
-    say "  端口 $DB_PORT 空闲"
-fi
-
-# ── 3. Redis / Valkey ──────────────────────────────────────────────────────
-say "3/5 检查 Redis..."
-
-if systemctl -q is-active valkey 2>/dev/null; then
-    say "  Valkey (Redis) 已运行"
-elif systemctl -q is-active redis 2>/dev/null; then
-    say "  Redis 已运行"
 else
-    warn "  Redis 未运行，stream server 可能受影响"
-    warn "  安装: sudo pacman -S valkey && sudo systemctl start valkey"
+    if $USE_HOST_DB; then
+        die "No MariaDB on port $DB_PORT. Start it first, or run without --host-db"
+    fi
+    say "  Port $DB_PORT is free"
 fi
 
-# ── 4. Docker ───────────────────────────────────────────────────────────────
-say "4/5 配置 Docker..."
+# ── 3. Redis ────────────────────────────────────────────────────────────────
+say "3/5 Checking Redis..."
 
-# Ensure user is in docker group
-if ! groups "$USER" | grep -q docker; then
-    sudo usermod -aG docker "$USER"
-    say "  已将 $USER 加入 docker 组（重新登录后生效）"
+REDIS_OK=false
+for svc in valkey redis redis-server; do
+    if systemctl -q is-active "$svc" 2>/dev/null; then
+        say "  $svc is running"
+        REDIS_OK=true
+        break
+    fi
+done
+
+if ! $REDIS_OK; then
+    warn "Redis not running — stream server will be affected"
+    warn "Install:"
+    warn "  Arch:    sudo pacman -S valkey && sudo systemctl start valkey"
+    warn "  Debian:  sudo apt install redis-server && sudo systemctl start redis-server"
+    warn "  macOS:   brew install redis && brew services start redis"
+    warn ""
+    warn "Continuing anyway (API + MinIO will work, only streaming won't)"
 fi
 
-# Docker daemon config (skip iptables for host-network containers)
+# ── 4. Docker daemon ────────────────────────────────────────────────────────
+say "4/5 Configuring Docker..."
+
+# Ensure docker can be used (sudo or docker group)
+if ! docker ps >/dev/null 2>&1; then
+    if ! groups | grep -q docker; then
+        sudo usermod -aG docker "$USER" 2>/dev/null || true
+        say "  Added $USER to docker group (re-login to take effect)"
+    fi
+fi
+
+# Docker daemon config for host-network containers
 if [ ! -f /etc/docker/daemon.json ]; then
     echo '{"iptables":false}' | sudo tee /etc/docker/daemon.json >/dev/null
+    say "  Created /etc/docker/daemon.json (iptables off for host networking)"
 fi
 
 # Proxy for Docker daemon + containerd
 if [ -n "$PROXY" ]; then
-    say "  检测到代理配置: $PROXY"
+    say "  Proxy detected: $PROXY"
     for svc in docker containerd; do
         DROPIN="/etc/systemd/system/${svc}.service.d/proxy.conf"
         if [ ! -f "$DROPIN" ]; then
@@ -112,77 +133,88 @@ Environment="HTTP_PROXY=$PROXY"
 Environment="HTTPS_PROXY=$PROXY"
 Environment="NO_PROXY=localhost,127.0.0.1"
 EOF
+            say "  Added proxy to $svc"
         fi
     done
     sudo systemctl daemon-reload
     sudo systemctl restart containerd docker
 fi
 
-if ! systemctl -q is-active docker 2>/dev/null; then
-    sudo systemctl start docker
-fi
-if ! systemctl -q is-active containerd 2>/dev/null; then
-    sudo systemctl start containerd
-fi
+sudo systemctl start docker 2>/dev/null || true
+sudo systemctl start containerd 2>/dev/null || true
 
-# ── 5. Build & Start ───────────────────────────────────────────────────────
-say "5/5 构建并启动..."
+# ── 5. Build & start ────────────────────────────────────────────────────────
+say "5/5 Build and start..."
 
-COMPOSE_CMD="sudo docker compose"
+COMPOSE_CMD="docker compose"
 COMPOSE_PROFILE=""
 
 if $USE_HOST_DB; then
-    COMPOSE_PROFILE=""
-    say "  启动服务（使用宿主机 MariaDB）..."
+    say "  Starting with host MariaDB..."
 else
     COMPOSE_PROFILE="--profile docker-db"
-    say "  启动服务（使用 Docker MariaDB）..."
+    say "  Starting with Docker MariaDB..."
 fi
 
-if ! $COMPOSE_CMD build; then
-    die "构建失败，请检查网络或代理设置"
+# Try without sudo first (docker group), fall back to sudo
+compose_pre() {
+    if docker ps >/dev/null 2>&1; then
+        $COMPOSE_CMD "$@"
+    else
+        sudo $COMPOSE_CMD "$@"
+    fi
+}
+
+if ! compose_pre build; then
+    die "Build failed — check network or proxy settings"
 fi
 
-$COMPOSE_CMD down 2>/dev/null || true
-$COMPOSE_CMD $COMPOSE_PROFILE up -d
+compose_pre down 2>/dev/null || true
+compose_pre $COMPOSE_PROFILE up -d
 
-# Wait for app health (init.sh may need a moment for MySQL wait loop)
-say "等待服务启动..."
-for i in $(seq 1 35); do
-    if curl -sf http://localhost:${ZOTERO_API_PORT:-23231}/ >/dev/null 2>&1; then
+say "Waiting for services..."
+for i in $(seq 1 40); do
+    if curl -sf "http://localhost:${ZOTERO_API_PORT:-23231}/" >/dev/null 2>&1; then
+        say "API ready after ${i}s"
         break
     fi
-    if [ "$i" -eq 35 ]; then
-        warn "API 未能在预期时间内响应，请检查容器日志: sudo docker compose logs app"
+    if [ "$i" -eq 40 ]; then
+        warn "API not responding — check logs: docker compose logs app"
     fi
     sleep 1
 done
 
 # ── Done ─────────────────────────────────────────────────────────────────────
-DB_MODE="$($USE_HOST_DB && echo '宿主机 MariaDB' || echo 'Docker MariaDB')"
+DB_MODE="$($USE_HOST_DB && echo 'host MariaDB' || echo 'Docker MariaDB')"
 echo ""
-echo "╔══════════════════════════════════════════════════════╗"
-echo "║          zot-data 已启动                             ║"
-echo "╠══════════════════════════════════════════════════════╣"
-echo "║  DB:       $DB_MODE (port ${DB_PORT:-3306})"
-echo "║  API:      http://localhost:${ZOTERO_API_PORT:-23231}/"
-echo "║  MinIO:    http://localhost:${MINIO_PORT:-9000}/"
-echo "║  Console:  http://localhost:${MINIO_CONSOLE_PORT:-9001}/"
-echo "║  Stream:   http://localhost:${STREAM_PORT:-8082}/"
-echo "║                                                      ║"
-echo "║  注册:     http://localhost:${ZOTERO_API_PORT:-23231}/auth/register.php"
-echo "║  登录:     http://localhost:${ZOTERO_API_PORT:-23231}/auth/login.php"
-echo "║  群组:     http://localhost:${ZOTERO_API_PORT:-23231}/auth/groups.php"
-echo "║                                                      ║"
-echo "║  默认管理员: admin / adminpass                        ║"
-echo "╚══════════════════════════════════════════════════════╝"
+echo "======================================================"
+echo "  zot-data started"
+echo "======================================================"
+echo "  DB:       $DB_MODE (port ${DB_PORT:-3306})"
+echo "  API:      http://localhost:${ZOTERO_API_PORT:-23231}/"
+echo "  MinIO:    http://localhost:${MINIO_PORT:-9000}/"
+echo "  Console:  http://localhost:${MINIO_CONSOLE_PORT:-9001}/"
+echo "  Stream:   http://localhost:${STREAM_PORT:-8082}/"
+echo ""
+echo "  Register: http://localhost:${ZOTERO_API_PORT:-23231}/auth/register.php"
+echo "  Login:    http://localhost:${ZOTERO_API_PORT:-23231}/auth/login.php"
+echo "  Groups:   http://localhost:${ZOTERO_API_PORT:-23231}/auth/groups.php"
+echo ""
+echo "  Default admin: admin / adminpass"
+echo "======================================================"
 
 APIPORT="${ZOTERO_API_PORT:-23231}"
 echo ""
-say "下一步: 打开 http://localhost:$APIPORT/auth/register.php 注册你的账号"
-say "然后把获取的 API Key 填入 Zotero 客户端的同步设置"
+say "Next: open http://localhost:$APIPORT/auth/register.php to create your account"
 if $USE_HOST_DB; then
-    say "（注意: 宿主机 MariaDB 的 sql_mode 需要去掉 STRICT_TRANS_TABLES）"
-    say "  检查: mysql -e \"SELECT @@sql_mode;\" | grep -q STRICT"
-    say "  修复: 编辑 /etc/my.cnf.d/ 下的配置，去掉 STRICT_TRANS_TABLES 后重启 MariaDB"
+    warn ""
+    warn "Host MariaDB checklist:"
+    warn "  1. Create the zotero user with grants (if not done already):"
+    warn "     CREATE USER 'zotero'@'%' IDENTIFIED BY 'zotropass';"
+    warn "     GRANT ALL ON zotero.* TO 'zotero'@'%';"
+    warn "     GRANT ALL ON ids.*    TO 'zotero'@'%';"
+    warn "     GRANT ALL ON www.*    TO 'zotero'@'%';"
+    warn "  2. Remove STRICT_TRANS_TABLES from sql_mode:"
+    warn "     Check: mysql -e 'SELECT @@sql_mode;' | grep STRICT"
+    warn "     Edit  /etc/mysql/mariadb.conf.d/ (or /etc/my.cnf.d/) and restart"
 fi
