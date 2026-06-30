@@ -1,13 +1,41 @@
 services:
+  mariadb:
+    profiles: ["docker-db"]
+    image: mariadb:11
+    network_mode: host
+    command: --sql_mode=ERROR_FOR_DIVISION_BY_ZERO,NO_AUTO_CREATE_USER,NO_ENGINE_SUBSTITUTION
+    environment:
+      MARIADB_ROOT_PASSWORD: ${DB_ROOT_PASS:-zotrootpass}
+      MARIADB_USER: ${DB_USER:-zotero}
+      MARIADB_PASSWORD: ${DB_PASS:-zotropass}
+    volumes:
+      - mariadb_data:/var/lib/mysql
+      - ./initdb.d:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD", "mariadb-admin", "ping", "-h", "127.0.0.1"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
   app:
     build:
       context: .
       dockerfile: Dockerfile
       args:
         DATASERVER_REF: master
+        ZOTERO_API_PORT: ${ZOTERO_API_PORT:-23231}
+        HTTP_PROXY: ${HTTP_PROXY:-}
+        HTTPS_PROXY: ${HTTPS_PROXY:-}
+        http_proxy: ${http_proxy:-}
+        https_proxy: ${https_proxy:-}
+        NO_PROXY: ${NO_PROXY:-}
+        no_proxy: ${no_proxy:-}
     network_mode: host
     environment:
-      - DB_HOST=127.0.0.1
+      - MYSQL_HOST=${DB_HOST:-127.0.0.1}
+      - MYSQL_PORT=${DB_PORT:-3306}
+      - DB_HOST=${DB_HOST:-127.0.0.1}
+      - DB_PORT=${DB_PORT:-3306}
       - DB_USER=${DB_USER:-zotero}
       - DB_PASS=${DB_PASS:-zotropass}
       - DB_NAME=${DB_NAME:-zotero}
@@ -44,13 +72,23 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.stream
+      args:
+        STREAM_PORT: ${STREAM_PORT:-8082}
+        HTTP_PROXY: ${HTTP_PROXY:-}
+        HTTPS_PROXY: ${HTTPS_PROXY:-}
+        http_proxy: ${http_proxy:-}
+        https_proxy: ${https_proxy:-}
+        NO_PROXY: ${NO_PROXY:-}
+        no_proxy: ${no_proxy:-}
     network_mode: host
     environment:
       - NODE_ENV=production
       - REDIS_HOST=${REDIS_HOST:-127.0.0.1}
       - REDIS_PORT=${REDIS_PORT:-6379}
       - REDIS_PASSWORD=${REDIS_PASSWORD:-}
+      - STREAM_PORT=${STREAM_PORT:-8082}
       - API_URL=${API_URL:-https://api.zotero.org/}
 
 volumes:
+  mariadb_data:
   minio_data:

@@ -2,185 +2,171 @@
 
 A fully self-contained [Zotero Data Server](https://github.com/zotero/dataserver) deployment with Docker, plus a Python sync client.
 
-> ⚠ **This project is in active development.** Breaking changes may occur.
+> ⚠ **Active development.** Breaking changes may occur.
 
 ---
 
-## Architecture
+## Quick Start
 
-```
-┌─────────────┐     ┌───────────────────┐     ┌──────────┐
-│  Zotero     │────▶│  Reverse Proxy    │────▶│  MinIO   │
-│  Client     │     │  (Caddy / nginx)  │     │  :9000   │
-│  (desktop)  │     │                   │     └──────────┘
-└─────────────┘     │  zot.example.com──│───▶ app :8080
-                    │  s3.example.com───│───▶ MinIO :9000
-                    │  stream.example   │───▶ stream :8082
-                    └───────────────────┘
-                           │
-                    ┌──────┴──────┐
-                    │  MySQL      │
-                    │  Redis      │
-                    └─────────────┘
+```bash
+git clone https://github.com/flin16/zot-data.git
+cd zot-data/docker
+./setup.sh        # one-command setup & start
 ```
 
-### Components
+Then open [http://localhost:23231/auth/register.php](http://localhost:23231/auth/register.php) to create your account.
 
-| Service | Base Image | Role |
-|---------|-----------|------|
-| **app** | `php:8.2-apache` | Zotero API server (items, collections, sync, auth) |
-| **minio** | `minio/minio` | S3-compatible storage for attachments |
-| **stream** | `node:22-alpine` | WebSocket real-time sync notifications (optional) |
+### What setup.sh does
 
-### Dependencies (host)
+| Step | What |
+|------|------|
+| 1/5 | Check system deps (Docker, docker-compose) |
+| 2/5 | Check port 3306 — error if occupied (or requires `--host-db`) |
+| 3/5 | Check Redis is running |
+| 4/5 | Configure Docker (docker group, proxy, daemon) |
+| 5/5 | Build images, start containers, init database |
 
-- **MySQL / MariaDB** — stores all Zotero data (items, collections, groups, users)
-- **Redis** — request limiter + WebSocket pub/sub for stream server
-- **Reverse proxy** — Caddy, nginx, or similar for TLS termination and routing
-- **MinIO client** (`mc`) — used by init script for bucket creation
+### Services started
+
+| Container | Port | Role |
+|-----------|------|------|
+| **app** | `:23231` | Zotero API server |
+| **mariadb** | `:3306` | Database (auto-initialized with schema) |
+| **minio** | `:9000` | S3 attachment storage |
+| **stream** | `:8082` | WebSocket real-time sync (needs Redis) |
+
+---
 
 ## Prerequisites
 
-You need these running on your **host machine** (not in Docker):
+Only **Redis** needs to be running on the host (for the stream server):
 
-- **MySQL / MariaDB** — create the databases beforehand (the init script populates them)
-- **Redis** — optional, only if you want the stream server
-- **Reverse proxy** — Caddy, nginx, or similar, to provide TLS and route subdomains
+```bash
+# Arch
+sudo pacman -S valkey && sudo systemctl start valkey
 
-> Docker containers use `network_mode: host`, so they connect to MySQL and Redis at `127.0.0.1` on the host.
+# Debian/Ubuntu
+sudo apt install redis-server && sudo systemctl start redis
+```
 
-## Quick Start
+Everything else (MariaDB, MinIO, Apache/PHP) runs in Docker.
 
-### Step 1: Create the MySQL databases
+---
+
+## Usage Modes
+
+### Default: Docker MariaDB (recommended)
+
+```bash
+cd docker && ./setup.sh
+```
+
+MariaDB runs in a Docker container with isolated volume (`mariadb_data`). No host database is touched.
+
+### Host MariaDB
+
+```bash
+cd docker && ./setup.sh --host-db
+```
+
+Use your existing host MariaDB instead of Docker. You must create the databases and user first:
 
 ```sql
-CREATE DATABASE zotero;
-CREATE DATABASE ids;
-CREATE DATABASE www;
-CREATE USER 'zotero'@'127.0.0.1' IDENTIFIED BY 'zotropass';
-GRANT ALL ON zotero.* TO 'zotero'@'127.0.0.1';
-GRANT ALL ON ids.* TO 'zotero'@'127.0.0.1';
-GRANT ALL ON www.* TO 'zotero'@'127.0.0.1';
+CREATE DATABASE zotero CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+CREATE DATABASE ids    CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+CREATE DATABASE www    CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+CREATE USER 'zotero'@'%' IDENTIFIED BY 'zotropass';
+GRANT ALL ON zotero.* TO 'zotero'@'%';
+GRANT ALL ON ids.*    TO 'zotero'@'%';
+GRANT ALL ON www.*    TO 'zotero'@'%';
 ```
 
-### Step 2: Copy and edit config
+> **Note:** Ensure `sql_mode` does NOT include `STRICT_TRANS_TABLES` (breaks Zotero zero-dates).
+
+---
+
+## The Login Flow
+
+Zotero uses a session-based OAuth-like flow:
+
+1. In Zotero client settings, enter your server URL (e.g. `http://192.168.1.82:23231/`)
+2. Click **Login** — your browser opens a login page at your server
+3. Enter your username and password (register at `/auth/register.php` first)
+4. The server completes the session; Zotero client receives its API key automatically
+
+No manual API key entry needed in the client.
+
+### Getting an API key manually
+
+For API access (scripts, curl, Python client):
 
 ```bash
-cd docker
-cp .env.example .env
-# Edit .env — at minimum set your database password and domain
+# Register a new user
+curl -X POST http://localhost:23231/auth/register.php \
+  -d "username=myuser&password=mypass123&password2=mypass123"
+# → Shows your API Key: <code>abc123def456</code>
+
+# Or log in to see existing key
+http://localhost:23231/auth/login.php
 ```
 
-### Step 3: Build and start Docker services
+Then use the key for API calls:
 
 ```bash
-docker compose up -d
+curl -H "Zotero-API-Key: abc123def456" http://localhost:23231/users/1/items/top
 ```
 
-This builds the app image (clones dataserver from GitHub, applies patches, installs deps) and starts three services:
+---
 
-| Container | What it does |
-|-----------|-------------|
-| `app` | Zotero API server on port **8080** |
-| `minio` | S3 file storage on port **9000** |
-| `stream` | WebSocket server on port **8082** (optional) |
+## Group Management
 
-On first start, the init script inside the `app` container will:
-1. Load the Zotero schema into MySQL (creates all tables in `zotero`, `ids`, `www`)
-2. Create the default admin user in `www.users` so the OAuth login page works
-3. Create MinIO buckets (`zotero`, `zotero-fulltext`)
+A web UI is available at `/auth/groups.php`:
 
-No manual SQL needed — the admin user is created automatically with the username and password from your `.env` file.
+| Action | How |
+|--------|-----|
+| **Create group** | Name + owner + type + permissions |
+| **Add members** | Select user, choose role (member/admin) |
+| **Change roles** | Dropdown — instant save |
+| **Remove members** | Click ✕ (last owner is protected) |
+| **Update settings** | Type, library editing/reading, file editing |
 
-### Step 4: Verify the API is running
+Group types: `Private`, `PublicClosed`, `PublicOpen`.
 
-```bash
-curl http://localhost:8080/
-# → "Nothing to see here."   (means it works)
+---
 
-# Get an API key via the login page:
-# Open http://localhost:8080/auth/login in your browser,
-# or use the test endpoint:
-curl -X POST http://localhost:8080/keys/sessions \
-    -d "username=admin&password=adminpass"
-# → Returns a session token — complete the login via the returned loginURL
-```
+## Migrating from an Existing Zotero Library
 
-### Step 5: Configure your reverse proxy (Caddy / nginx)
+> **Important:** Back up your old SQLite BEFORE logging into the new server in your Zotero client. Once you log in, the client syncs and overwrites the local database with the empty server data — your old items are gone.
 
-The `docker/example.caddy` file is a reference, not something Docker uses. Add this to your real Caddyfile:
+If you have an existing Zotero library with lots of items, migrate them before connecting your client to the new server:
 
-```
-zot.example.com {
-    reverse_proxy 127.0.0.1:8080
-}
-s3.example.com {
-    reverse_proxy 127.0.0.1:9000
-}
-stream.example.com {
-    reverse_proxy 127.0.0.1:8082
-}
-```
+1. **Copy your old database** (before logging into the new server):
+   ```bash
+   cp ~/Zotero/zotero.sqlite ~/Zotero/zotero-backup.sqlite
+   ```
 
-Then reload Caddy: `sudo systemctl reload caddy`
+2. **Configure and run the migration script**, pointing `local_db` at the backup:
+   ```bash
+   cd python
+   cp zotero_sync_config.json config.json
+   # Edit config.json — set local_db to the backup path, and your server URL/credentials
+   uv run --with requests --with minio python3 zotero_sync_client.py --config config.json
+   ```
 
-### Step 6: Configure Zotero client
+3. **Now log into the new server** from your Zotero client. Your items are already there.
 
-Zotero desktop stores configuration in `prefs.js`. The file location depends on your OS:
-
-| OS | Path |
-|----|------|
-| **macOS** | `~/Library/Zotero/profiles/xxxxxx.default/prefs.js` |
-| **Windows** | `%APPDATA%\Zotero\Zotero\Profiles\xxxxxx.default\prefs.js` |
-| **Linux** | `~/.zotero/zotero/xxxxxx.default/prefs.js` |
-
-Add these lines, then (re)start Zotero:
-
-```js
-user_pref("extensions.zotero.api.url", "https://zot.example.com/");
-user_pref("extensions.zotero.streaming.url", "wss://stream.example.com/");
-```
-
-To disable WebSocket streaming (falls back to polling — no functional difference):
-
-```js
-user_pref("extensions.zotero.streaming.enabled", false);
-```
-
-**Zotero sync UI method** (alternative to editing prefs.js):
-
-1. Open Zotero → Edit → Settings → Sync
-2. Uncheck **Use Zotero's servers**
-3. Enter your server URL: `https://zot.example.com/`
-4. Enter your username and password
-5. Click **Login** — your browser will open the OAuth page at your server
-6. After logging in, an API key is automatically created and stored
-
-> ⚠ The sync UI method may not work reliably on all Zotero versions. If the login fails, use the `prefs.js` method instead and obtain an API key via `https://zot.example.com/auth/login`.
-
-## Python Sync Client
-
-For syncing from an existing Zotero SQLite database:
-
-```bash
-cd python
-pip install -r requirements.txt
-cp zotero_sync_config.json config.json
-# Edit config.json
-python zotero_sync_client.py
-```
+This script is a **one-time migration tool**, not for daily use.
 
 ### Config
 
 ```json
 {
-    "api_url": "https://zot.example.com",
+    "api_url": "http://localhost:23231",
     "username": "admin",
     "password": "adminpass",
-    "user_id": 1,
-    "local_db": "/path/to/zotero.sqlite",
-    "minio_endpoint": "s3.example.com",
-    "minio_secure": true,
+    "local_db": "~/Zotero/zotero-backup.sqlite",
+    "minio_endpoint": "localhost:9000",
+    "minio_secure": false,
     "sync_attachments": true,
     "library_filter": "group"
 }
@@ -190,53 +176,64 @@ Options:
 - `library_filter`: `"all"`, `"user"`, or `"group"` (default: `"group"`)
 - `--dry-run`: preview without uploading
 
-## Environment Variables
+---
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `DB_USER` | `zotero` | MySQL username |
-| `DB_PASS` | `zotropass` | MySQL password |
-| `DB_NAME` | `zotero` | MySQL database |
-| `ADMIN_USERNAME` | `admin` | Default admin username |
-| `ADMIN_PASSWORD` | `adminpass` | Default admin password |
-| `AUTH_SALT` | `dev-salt-change-in-production` | Salt for password hashing |
-| `S3_PUBLIC_ENDPOINT` | `http://localhost:9000` | Public S3 endpoint for presigned URLs |
-| `AWS_ACCESS_KEY_ID` | `minioadmin` | MinIO access key |
-| `AWS_SECRET_ACCESS_KEY` | `minioadmin` | MinIO secret key |
-| `REDIS_HOST` | `127.0.0.1` | Redis host |
-| `REDIS_PORT` | `6379` | Redis port |
-| `REDIS_PASSWORD` | — | Redis password |
+## Reverse Proxy (optional)
 
-## Client Preferences
+For TLS and a friendly domain name:
 
-On the Zotero desktop client, add to `prefs.js`:
+```
+# Caddy
+zot.example.com { reverse_proxy 127.0.0.1:23231 }
+s3.example.com   { reverse_proxy 127.0.0.1:9000 }
+stream.example   { reverse_proxy 127.0.0.1:8082 }
+```
+
+## Zotero Client Configuration
+
+Edit `prefs.js` (see [Zotero docs](https://www.zotero.org/support/prefs.js)):
 
 ```js
 user_pref("extensions.zotero.api.url", "https://zot.example.com/");
 user_pref("extensions.zotero.streaming.url", "wss://stream.example.com/");
 ```
 
-To disable WebSocket (falls back to polling):
+Or via Zotero UI: **Edit → Settings → Sync** → uncheck "Use Zotero's servers" → enter your server URL → **Login**.
 
-```js
-user_pref("extensions.zotero.streaming.enabled", false);
-```
+> The Login button opens your server's login page. After authenticating, the client gets its API key automatically. No manual key entry needed.
+
+---
+
+## Environment Variables
+
+`.env` file is auto-generated by `setup.sh`. Key variables:
+
+| Variable | Default | Notes |
+|----------|---------|-------|
+| `DB_HOST` | `127.0.0.1` | MariaDB host |
+| `DB_PORT` | `3306` | MariaDB port |
+| `ADMIN_USERNAME` | `admin` | Default admin user |
+| `ADMIN_PASSWORD` | `adminpass` | Change in production! |
+| `S3_PUBLIC_ENDPOINT` | `http://localhost:9000` | Public MinIO URL |
+| `HTTP_PROXY` | — | Optional build-time proxy |
+
+---
 
 ## What's Patched
 
-The dataserver is cloned from the [official repository](https://github.com/zotero/dataserver) at build time. Patches are applied via `docker/patch-header.php`:
+The dataserver is cloned from [zotero/dataserver](https://github.com/zotero/dataserver) at build time. Patches via `docker/patch-header.php`:
 
-| File | Change |
-|------|--------|
-| `ApiController.php` | Add `currentUser()` action, `retractions()` endpoint |
-| `GroupsController.php` | Send `Last-Modified-Version` for `format=versions` |
-| `Password.inc.php` | Use `www` database instead of `zotero_www` |
-| `Storage.inc.php` | Use `www` database for storage quota query |
-| `Item.inc.php` | Default annotation `sortIndex` when null/empty |
-| `header.inc.php` | Redis/S3/MinIO config from env vars |
-| `routes.inc.php` | Add `/users/current` route |
-| `.htaccess` | Add `auth/login` → `login.php` rewrite |
+| Change | File |
+|--------|------|
+| Redis/S3/MinIO config from env vars | `header.inc.php` |
+| `/users/current` endpoint | `ApiController.php` |
+| `format=versions` support | `GroupsController.php` |
+| www database routing | `Password.inc.php`, `Storage.inc.php` |
+| Annotation sortIndex fallback | `Item.inc.php` |
+| Connection env-configurable | `dbconnect.inc.php` |
+
+---
 
 ## License
 
-AGPL-3.0. This project wraps the [Zotero Data Server](https://github.com/zotero/dataserver) (also AGPL-3.0).
+AGPL-3.0. Wraps the [Zotero Data Server](https://github.com/zotero/dataserver) (also AGPL-3.0).

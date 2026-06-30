@@ -7,11 +7,12 @@
 header('Content-Type: text/html; charset=utf-8');
 
 // Connect to MySQL
-$host = '127.0.0.1';
+$host = getenv('DB_HOST') ?: '127.0.0.1';
+$port = (int)(getenv('DB_PORT') ?: 3306);
 $user = getenv('DB_USER') ?: 'zotero';
 $pass = getenv('DB_PASS') ?: 'zotropass';
 
-$mysqli = new mysqli($host, $user, $pass, 'zotero', 3306);
+$mysqli = new mysqli($host, $user, $pass, 'zotero', $port);
 if ($mysqli->connect_error) {
     die("DB error: " . $mysqli->connect_error);
 }
@@ -49,6 +50,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $stmt->bind_param('iss', $nextID, $username, $hash);
             $stmt->execute();
             $stmt->close();
+
+            // Ensure GDN_User entry (prevents banned-user check errors)
+            $mysqli->query("INSERT IGNORE INTO www.GDN_User (UserID, Banned) VALUES ($nextID, 0)");
             // Insert into zotero.users (creates library)
             $res2 = $mysqli->query("SELECT COALESCE(MAX(libraryID), 0) + 1 as nextLibID FROM libraries");
             $nextLibID = $res2->fetch_assoc()['nextLibID'];
@@ -59,10 +63,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $mysqli->query(
                 "INSERT INTO users (userID, libraryID, username) VALUES ($nextID, $nextLibID, '$username')"
             );
+            // Register library in shardLibraries (required for foreign keys)
+            $mysqli->query(
+                "INSERT IGNORE INTO shardLibraries (libraryID, libraryType, lastUpdated, version, storageUsage)
+                 VALUES ($nextLibID, 'user', NOW(), 0, 0)"
+            );
             // Generate API key
             $apiKey = bin2hex(random_bytes(12));
             $mysqli->query(
                 "INSERT INTO `keys` (`key`, userID, name) VALUES ('$apiKey', $nextID, 'auto-generated')"
+            );
+            $keyID = $mysqli->insert_id;
+
+            // Grant library + write permissions
+            $mysqli->query(
+                "INSERT IGNORE INTO keyPermissions (keyID, libraryID, permission, granted)
+                 VALUES ($keyID, $nextLibID, 'library', 1),
+                        ($keyID, $nextLibID, 'write', 1)"
             );
             $success = "User <strong>$username</strong> registered! API Key: <code>$apiKey</code>";
         }
@@ -94,6 +111,9 @@ code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; }
   <input name="password2" type="password" placeholder="Confirm password" required>
   <button type="submit">Register</button>
 </form>
-<p style="color:#888;font-size:small">Already have an account? Use the API Key in your Zotero client sync settings.</p>
+<p style="color:#888;font-size:small">
+  Already have an account? Use the API Key in your Zotero client sync settings.<br>
+  <a href="login.php">Login</a> · <a href="groups.php">Group Management</a>
+</p>
 </body>
 </html>

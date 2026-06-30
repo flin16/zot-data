@@ -6,11 +6,12 @@
  */
 
 // Use Zotero framework for session completion
-$host = '127.0.0.1';
+$host = getenv('DB_HOST') ?: '127.0.0.1';
+$port = (int)(getenv('DB_PORT') ?: 3306);
 $user = getenv('DB_USER') ?: 'zotero';
 $pass = getenv('DB_PASS') ?: 'zotropass';
 
-$mysqli = new mysqli($host, $user, $pass, 'zotero', 3306);
+$mysqli = new mysqli($host, $user, $pass, 'zotero', $port);
 if ($mysqli->connect_error) {
     die("DB error: " . $mysqli->connect_error);
 }
@@ -143,6 +144,9 @@ button:hover { background: #3a6599; }
   <input name="password" type="password" placeholder="Password" required>
   <button type="submit">Login</button>
 </form>
-<p class="note">Don't have an account? <a href="register.php">Register here</a></p>
+<p class="note">
+  Don't have an account? <a href="register.php">Register here</a><br>
+  <a href="groups.php">Group Management</a>
+</p>
 </body>
 </html>

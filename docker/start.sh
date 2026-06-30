@@ -1,43 +1,36 @@
 #!/bin/bash
-# start.sh — 一键启动 zot-data 服务
-# 用法: cd docker && ./start.sh
-
+# start.sh — 快速启动（首次运行请用 ./setup.sh）
+# 用法: ./start.sh [--host-db]
 set -e
 cd "$(dirname "$0")"
 
-echo "==> 检查 Docker Desktop..."
-if ! docker info > /dev/null 2>&1; then
-    echo "Docker 未运行，请先启动 Docker Desktop。"
-    exit 1
-fi
+HOST_DB_FLAG=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --host-db) HOST_DB_FLAG="--host-db"; shift ;;
+        *) echo "未知参数: $1"; exit 1 ;;
+    esac
+done
 
 if [ ! -f .env ]; then
-    cp .env.example .env
-    echo "已生成 .env，请编辑后重新运行。"
-    echo "需要配置 MYSQL_HOST 指向有 Zotero 数据库的主机。"
-    exit 1
+    echo "首次运行? 请使用 ./setup.sh $HOST_DB_FLAG"
+    exec ./setup.sh $HOST_DB_FLAG
 fi
 
-source .env
-MYSQL_HOST="${MYSQL_HOST:-host.docker.internal}"
+set -a; source .env; set +a
 
-if [ "$MYSQL_HOST" = "host.docker.internal" ]; then
-    if ! nc -z localhost 3306 2>/dev/null; then
-        echo "MYSQL_HOST=host.docker.internal 但本机 3306 不可访问。"
-        echo "请确保 MySQL 在本机运行，或将 MYSQL_HOST 改为服务器地址。"
-        exit 1
-    fi
+COMPOSE_PROFILE=""
+if [ -z "$HOST_DB_FLAG" ]; then
+    COMPOSE_PROFILE="--profile docker-db"
+    echo "模式: Docker MariaDB"
+else
+    echo "模式: 宿主机 MariaDB"
 fi
 
-echo "==> 构建并启动 (app + minio)..."
-docker compose up -d --build
-
-ZOTERO_PORT="${ZOTERO_API_PORT:-8080}"
-MINIO_PORT="${MINIO_PORT:-9000}"
+echo "构建并启动..."
+sudo docker compose build && sudo docker compose $COMPOSE_PROFILE up -d
 
 echo ""
-echo "✅ 已启动"
-echo "   API:     http://localhost:${ZOTERO_PORT}/"
-echo "   MinIO:   http://localhost:${MINIO_PORT}/  (minioadmin/minioadmin)"
-echo ""
-echo "   同步:    cd ../python && uv run --with requests --with minio python3 zotero_sync_client.py"
+echo "✅ zot-data 已启动"
+echo "   API: http://localhost:${ZOTERO_API_PORT:-23231}/"
+echo "   注册: http://localhost:${ZOTERO_API_PORT:-23231}/auth/register.php"

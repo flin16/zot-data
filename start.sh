@@ -24,6 +24,8 @@ fi
 : "${API_URL:=http://localhost:8080}"
 : "${S3_PUBLIC_ENDPOINT:=http://localhost:9000}"
 : "${STREAM_URL:=ws://localhost:8082}"
+: "${DB_HOST:=127.0.0.1}"
+: "${DB_PORT:=3306}"
 : "${DB_USER:=zotero}"
 : "${DB_PASS:=zotropass}"
 : "${DB_NAME:=zotero}"
@@ -72,7 +74,8 @@ echo ">>> Data server..."
 docker rm -f app-test 2>/dev/null || true
 docker run -d --name app-test \
   --network host \
-  -e DB_HOST=127.0.0.1 \
+  -e DB_HOST="$DB_HOST" \
+  -e DB_PORT="$DB_PORT" \
   -e DB_USER="$DB_USER" \
   -e DB_PASS="$DB_PASS" \
   -e DB_NAME="$DB_NAME" \

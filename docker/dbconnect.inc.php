@@ -8,8 +8,8 @@
  *   DB_USER, DB_PASS, DB_NAME
  */
 function Zotero_DBConnectAuth($db) {
-    $host = '127.0.0.1';
-    $port = 3306;
+    $host = getenv('DB_HOST') ?: '127.0.0.1';
+    $port = (int)(getenv('DB_PORT') ?: 3306);
     $user = getenv('DB_USER') ?: 'zotero';
     $pass = getenv('DB_PASS') ?: 'zotropass';
     $dbName = getenv('DB_NAME') ?: 'zotero';
