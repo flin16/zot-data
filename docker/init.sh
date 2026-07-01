@@ -33,6 +33,8 @@ if ! mysql_u "$MYSQL_DB" -e "SELECT 1 FROM libraries LIMIT 1" >/dev/null 2>&1; t
     echo "[init] Loading schema into $MYSQL_DB..."
     mysql_u "$MYSQL_DB" -e "SOURCE master.sql;"
     mysql_u "$MYSQL_DB" -e "SOURCE coredata.sql;"
+    # master.sql creates a minimal settings table — drop it so shard.sql can create the real one
+    mysql_u "$MYSQL_DB" -e "DROP TABLE IF EXISTS settings;"
     mysql_u "$MYSQL_DB" -e "SOURCE shard.sql;"
     mysql_u "$MYSQL_DB" -e "SOURCE triggers.sql;"
 
@@ -108,6 +110,24 @@ if ! mysql_u "$MYSQL_DB" -e "SELECT 1 FROM libraries LIMIT 1" >/dev/null 2>&1; t
     echo "[init] Admin: $ADMIN_USER / $ADMIN_PASS"
 else
     echo "[init] Database already initialized, skipping."
+fi
+
+# Fix settings table (master.sql creates a minimal version without libraryID;
+# shard.sql has the real schema but fails if the table already exists).
+# This runs every start to repair existing deployments.
+if ! mysql_u "$MYSQL_DB" -e "SELECT libraryID FROM settings LIMIT 1" >/dev/null 2>&1; then
+    echo "[init] Repairing settings table (adding libraryID column)..."
+    mysql_u "$MYSQL_DB" -e "
+        DROP TABLE IF EXISTS settings;
+        CREATE TABLE settings (
+          libraryID int(10) unsigned NOT NULL,
+          name varchar(60) NOT NULL,
+          value TEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+          version int(10) unsigned NOT NULL,
+          lastUpdated timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          PRIMARY KEY (libraryID,name)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8;
+    "
 fi
 
 # Apply schema updates (new item types, fields) — run after DB is ready
